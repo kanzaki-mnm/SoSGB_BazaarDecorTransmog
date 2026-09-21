@@ -1,0 +1,22 @@
+# Visual Studio and .NET build output
+.vs/
+**/bin/
+**/obj/
+*.user
+*.suo
+
+# Local reverse-engineering environments and generated inspection data
+.asset-inspect/
+
+# Runtime logs copied from BepInEx
+LogOutput.log
+ErrorLog.log
+logs/*.log
+
+# Local screenshots and crops used during investigation
+/*.png
+/*.jpg
+
+# OS metadata
+.DS_Store
+Thumbs.db

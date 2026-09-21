@@ -1,0 +1,19 @@
+{
+  "appearance.title": "Change Appearance",
+  "appearance.exit.confirm": "Apply the appearance changes and return?",
+  "presets.guide": "Presets",
+  "presets.menu.save": "Save preset",
+  "presets.menu.load": "Load preset",
+  "presets.slots.empty": "Empty slot",
+  "presets.name.prompt": "Enter a preset name",
+  "presets.name.confirm": "Save this preset as \"{0}\"?",
+  "presets.save.completed": "Preset saved.",
+  "presets.load.completed": "Preset loaded.",
+  "presets.delete.completed": "Preset deleted.",
+  "presets.delete.guide": "Delete",
+  "presets.delete.confirm": "Delete preset \"{0}\"?",
+  "actual.title": "Use actual appearance",
+  "actual.caption": "Displays the appearance of the actual effect object.",
+  "hidden.title": "Hide object",
+  "hidden.caption": "Show no object in this slot."
+}

@@ -1,0 +1,19 @@
+{
+  "appearance.title": "みためを変更",
+  "appearance.exit.confirm": "みための変更を反映して戻ります。\nよろしいですか？",
+  "presets.guide": "プリセット",
+  "presets.menu.save": "プリセットを保存",
+  "presets.menu.load": "プリセットを読み込み",
+  "presets.slots.empty": "空きスロット",
+  "presets.name.prompt": "プリセット名を入力してください",
+  "presets.name.confirm": "プリセット名「{0}」で保存しますか？",
+  "presets.save.completed": "保存が完了しました。",
+  "presets.load.completed": "読み込みが完了しました。",
+  "presets.delete.completed": "削除が完了しました。",
+  "presets.delete.guide": "削除",
+  "presets.delete.confirm": "プリセット「{0}」を削除しますか？",
+  "actual.title": "実効果のみためを使う",
+  "actual.caption": "実効果オブジェのみためを表示します。",
+  "hidden.title": "表示しない",
+  "hidden.caption": "この場所のオブジェを表示しません。"
+}

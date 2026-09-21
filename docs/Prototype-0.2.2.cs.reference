@@ -1,0 +1,322 @@
+using System.Reflection;
+using System.Text.Json;
+using BepInEx.Configuration;
+using BokuMono;
+using BokuMono.Data;
+using HarmonyLib;
+using UnityEngine;
+using Category = BokuMono.BazaarCustomItemData.PartsCategory;
+using UObject = UnityEngine.Object;
+
+namespace BazaarDecorTransmog;
+
+internal static class Prototype
+{
+    internal static ConfigEntry<bool> Enabled;
+    internal static ConfigEntry<bool> ShowPanel;
+    private static ConfigEntry<int> Slot;
+    private static ConfigEntry<uint> VisualId;
+    private static ConfigEntry<string> ModelName;
+    private static BazaarMyShop shop;
+    private static GameObject applied;
+    private static GameObject visualObject;
+    private static bool originalRendererEnabled;
+    private static int generation, attemptedInstance;
+    private static bool pending;
+    private static float nextCheck;
+    private static float requestStarted;
+    private static string status = "Waiting for bazaar", actual = "-", visual = "-";
+
+    internal static void Configure(ConfigFile config)
+    {
+        Enabled = config.Bind("Prototype", "Enabled", true, "Swap one simple OrnamentS mesh. Changes take effect after restart, or use the panel toggle.");
+        ShowPanel = config.Bind("Prototype", "ShowPanel", true, "Show actual item, visual item and validation result.");
+        Slot = config.Bind("Prototype", "SlotIndex", 0, new ConfigDescription("OrnamentS slot: 0=left outside, 1=left inside, 2=right inside, 3=right outside. Restart after editing.", new AcceptableValueRange<int>(0, 3)));
+        VisualId = config.Bind("Prototype", "VisualItemId", 119074u, "Visual master ID. Actual placement is never changed. Restart after editing.");
+        ModelName = config.Bind("Prototype", "VisualModelName", "fld_cst_032_02", "Required model identity. A changed ID is resolved only by a unique OrnamentS/model match. Restart after editing.");
+    }
+
+    internal static void Observe(BazaarMyShop instance)
+    {
+        if (shop == instance) return;
+        Restore("shop changed");
+        shop = instance;
+        attemptedInstance = 0;
+    }
+
+    internal static void Suspend()
+    {
+        Restore("vanilla editor");
+        attemptedInstance = 0;
+    }
+
+    internal static void Tick()
+    {
+        if (Time.unscaledTime < nextCheck) return;
+        nextCheck = Time.unscaledTime + 0.5f;
+        // Information must remain available even while disabled or editing.
+        if (shop != null) Plugin.Guard("transmog-labels", RefreshLabels);
+        if (!Enabled.Value || shop == null)
+        {
+            if (applied != null || pending || visualObject != null) Restore("disabled or shop unloaded");
+            attemptedInstance = 0;
+            status = Enabled.Value ? "Waiting for bazaar" : "OFF - vanilla appearance";
+            return;
+        }
+        var manager = shop.BM;
+        if (manager == null) return;
+        if (manager.IsCustomMode)
+        {
+            if (applied != null || pending) Suspend();
+            status = "Vanilla editor - transmog suspended";
+            return;
+        }
+        if (pending && Time.unscaledTime - requestStarted > 20f)
+        {
+            generation++;
+            pending = false;
+            Reject("Visual request timed out; toggle OFF/ON to retry");
+        }
+        var model = CurrentModel();
+        if (visualObject != null && (applied == null || applied != model)) Restore("source model removed");
+        if (model == null) return;
+        if (applied != null && applied != model) Restore("model replaced");
+        if (applied == model || pending || attemptedInstance == model.GetInstanceID()) return;
+        if (manager.customData == null || manager.buffParam?.CustomPartsBuff == null) return;
+        var mdm = BokuMono.API.Bazaar.MDM;
+        uint actualId = manager.GetPutPartsData(Category.OrnamentS, Slot.Value);
+        var actualPart = mdm.CustomPartsMaster.GetMasterData(actualId);
+        if (actualPart == null || actualPart.Category != Category.OrnamentS) return;
+        // Editor exit may return before its asynchronous model restoration finishes.
+        if (model.name != actualPart.modelName && model.name != actualPart.modelName + "(Clone)")
+        {
+            status = "Waiting for original slot model";
+            return;
+        }
+        attemptedInstance = model.GetInstanceID();
+        uint resolved = ResolveVisual();
+        if (resolved == 0) { Reject("Visual identity missing or ambiguous"); return; }
+        var target = mdm.CustomPartsMaster.GetMasterData(resolved);
+        actual = ItemName(actualId);
+        visual = ItemName(resolved);
+        // Exclude empty slots and DLC models in this initial prototype.
+        if (actualId == 0 || target.DlcId != 0) { Reject("Empty slot or DLC target unsupported in prototype"); return; }
+        if (!SimpleMesh(model)) { Reject("Actual model is not a single static mesh"); return; }
+        pending = true;
+        requestStarted = Time.unscaledTime;
+        status = "Loading visual...";
+        int ticket = ++generation;
+        Plugin.Emit("TransmogRequest", new { slot = Slot.Value, actualId, actual, visualId = resolved, visual, modelName = target.modelName });
+        try
+        {
+            shop.RM.GetLoadCustomPartsModelData(target.modelName, (Il2CppSystem.Action<bool, GameObject>)((ok, prefab) =>
+            {
+                Plugin.Guard("transmog-callback", () =>
+                {
+                    if (ticket != generation) return;
+                    pending = false;
+                    if (!Enabled.Value || shop == null || shop.BM.IsCustomMode || CurrentModel() != model ||
+                        shop.BM.GetPutPartsData(Category.OrnamentS, Slot.Value) != actualId) return;
+                    if (!ok || prefab == null || !SimpleMesh(prefab)) { Reject("Visual load failed or unsupported hierarchy"); return; }
+                    try { Apply(model, prefab, shop.BM, actualId, resolved); }
+                    catch { Reject("Apply failed; see DiagnosticError"); throw; }
+                });
+                if (ticket == generation && pending) { pending = false; Reject("Callback failed; see DiagnosticError"); }
+            }), CacheLevel.Permanent);
+        }
+        catch { pending = false; throw; }
+    }
+
+    private static GameObject CurrentModel()
+    {
+        var models = shop?.putPartsModelDic;
+        return models != null && models.TryGetValue(Category.OrnamentS, out var slots) && slots != null &&
+            Slot.Value >= 0 && Slot.Value < slots.Length ? slots[Slot.Value] : null;
+    }
+
+    private static uint ResolveVisual()
+    {
+        var parts = BokuMono.API.Bazaar.MDM?.CustomPartsMaster?.list;
+        if (parts == null) return 0;
+        var identities = new List<VisualIdentity.Part>();
+        for (int i = 0; i < parts.Count; i++)
+            identities.Add(new(parts[i].Id, parts[i].Category.ToString(), parts[i].modelName));
+        return VisualIdentity.Resolve(identities, VisualId.Value, "OrnamentS", ModelName.Value);
+    }
+
+    private static void RefreshLabels()
+    {
+        actual = "Placement not ready";
+        visual = "Unresolved: " + ModelName.Value + " (" + VisualId.Value + ")";
+        var mdm = BokuMono.API.Bazaar.MDM;
+        if (mdm?.ItemMaster == null) return;
+        uint resolved = ResolveVisual();
+        if (resolved != 0) visual = ItemName(resolved);
+        // Always show the committed item in the configured slot, not a hovered preview.
+        var groups = shop.BM?.customData?.PutPartsDataDic;
+        if (groups == null) return;
+        for (int g = 0; g < groups.Count; g++)
+        {
+            var group = groups[g];
+            if (group == null || group.Category != Category.OrnamentS || group.DataDic == null) continue;
+            if (Slot.Value >= group.DataDic.Count) { actual = "Slot unavailable"; return; }
+            uint id = group.DataDic[Slot.Value];
+            actual = id == 0 ? "Empty slot" : ItemName(id);
+            return;
+        }
+        actual = "Slot unavailable";
+    }
+
+    private static string ItemName(uint id)
+    {
+        var master = BokuMono.API.Bazaar.MDM.ItemMaster;
+        return master.TryGetData(id, out var row) && row != null ? $"{row.ItemName} ({id})" : id.ToString();
+    }
+
+    private static bool SimpleMesh(GameObject model)
+    {
+        if (model.transform.childCount != 0) return false;
+        foreach (var component in model.GetComponents<Component>())
+        {
+            if (component == null) return false;
+            string type = component.GetIl2CppType().FullName;
+            if (type != "UnityEngine.Transform" && type != "UnityEngine.MeshFilter" && type != "UnityEngine.MeshRenderer") return false;
+        }
+        return model.GetComponent<MeshFilter>()?.sharedMesh != null && model.GetComponent<MeshRenderer>() != null;
+    }
+
+    private static void Apply(GameObject model, GameObject prefab, BazaarManager manager, uint actualId, uint visualId)
+    {
+        string before = Evidence(manager);
+        var renderer = model.GetComponent<MeshRenderer>();
+        originalRendererEnabled = renderer.enabled;
+        applied = model;
+        try
+        {
+            Plugin.Emit("RenderBefore", new { original = RenderInfo(model), target = RenderInfo(prefab) });
+            // Both objects passed the strict visual-only component check. Keep the original
+            // mesh/renderer intact, including native batching and per-renderer properties.
+            visualObject = UObject.Instantiate(prefab, model.transform.parent, false);
+            visualObject.name = "BDT_Visual_" + visualId;
+            visualObject.layer = model.layer;
+            visualObject.transform.localPosition = model.transform.localPosition;
+            visualObject.transform.localRotation = prefab.transform.localRotation;
+            visualObject.transform.localScale = prefab.transform.localScale;
+            visualObject.SetActive(true);
+            var visualRenderer = visualObject.GetComponent<MeshRenderer>();
+            visualRenderer.enabled = true;
+            visualRenderer.forceRenderingOff = false;
+            if (visualObject.GetComponent<MeshFilter>().sharedMesh.vertexCount == 0 || visualRenderer.sharedMaterials.Length == 0)
+                throw new InvalidOperationException("Visual has no geometry or materials");
+            renderer.enabled = false;
+            Plugin.Emit("RenderAfter", new { original = RenderInfo(model), visual = RenderInfo(visualObject) });
+            string after = Evidence(manager);
+            bool unchanged = before == after;
+            Plugin.Emit("TransmogApplied", new { actualId, visualId, slot = Slot.Value, unchanged,
+                before = JsonSerializer.Deserialize<JsonElement>(before), after = JsonSerializer.Deserialize<JsonElement>(after) });
+            if (!unchanged) { Restore("verification mismatch"); Reject("Verification failed; restored original"); return; }
+            status = "ON - placement / sampled effects unchanged";
+        }
+        catch { Restore("apply failed"); throw; }
+    }
+
+    private static object Vector(Vector3 value) => new { x = value.x, y = value.y, z = value.z };
+
+    private static object RenderInfo(GameObject model)
+    {
+        var renderer = model.GetComponent<MeshRenderer>();
+        var mesh = model.GetComponent<MeshFilter>().sharedMesh;
+        var materials = new List<object>();
+        foreach (var material in renderer.sharedMaterials)
+            materials.Add(material == null ? null : new { name = material.name, shader = material.shader?.name, queue = material.renderQueue });
+        return new { name = model.name, active = model.activeInHierarchy, layer = model.layer,
+            position = Vector(model.transform.position), localPosition = Vector(model.transform.localPosition),
+            localScale = Vector(model.transform.localScale), worldScale = Vector(model.transform.lossyScale),
+            rotation = Vector(model.transform.localEulerAngles), enabled = renderer.enabled,
+            forcedOff = renderer.forceRenderingOff, batched = renderer.isPartOfStaticBatch,
+            mesh = mesh.name, vertices = mesh.vertexCount, submeshes = mesh.subMeshCount,
+            meshCenter = Vector(mesh.bounds.center), meshSize = Vector(mesh.bounds.size),
+            worldCenter = Vector(renderer.bounds.center), worldSize = Vector(renderer.bounds.size), materials };
+    }
+
+    private static string Evidence(BazaarManager manager)
+    {
+        var slots = new List<object>();
+        var data = manager.customData.PutPartsDataDic;
+        for (int g = 0; g < data.Count; g++)
+            for (int i = 0; i < data[g].DataDic.Count; i++)
+                slots.Add(new { category = data[g].Category.ToString(), index = i, id = data[g].DataDic[i] });
+        var buff = manager.buffParam.CustomPartsBuff;
+        var values = new List<object>();
+        foreach (SeriesCategory series in Enum.GetValues<SeriesCategory>().Where(s => s != SeriesCategory.Max && s != SeriesCategory.All && s != SeriesCategory.None))
+            foreach (ExtraSeriesCategory extra in Enum.GetValues<ExtraSeriesCategory>().Where(e => e != ExtraSeriesCategory.All))
+                values.Add(new { series = series.ToString(), extra = extra.ToString(),
+                    buy = buff.GetBuyCountValue(series, extra), price = buff.GetPriceValue(series, extra),
+                    happy = buff.GetHappyEnergyValue(series, extra), freshness = buff.GetFreshnessUpValue(series, extra),
+                    quality = buff.GetQualityUpValue(series, extra), gauge = buff.GetBonusGaugeValue(series, extra) });
+        var passives = new List<uint>();
+        var active = buff.m_ActivePassiveParam;
+        for (int i = 0; i < active.Count; i++) passives.Add(active[i].Id);
+        var seriesIds = new List<uint>();
+        var activeSeries = buff.m_ActiveSeriesParam;
+        for (int i = 0; i < activeSeries.Count; i++) seriesIds.Add(activeSeries[i].Id);
+        return JsonSerializer.Serialize(new { slots, passives, seriesIds, values,
+            rich = buff.GetAddPopRichManValue(), trend = buff.GetUpgradeTrendValue() });
+    }
+
+    internal static void Restore(string reason)
+    {
+        generation++;
+        pending = false;
+        if (applied != null)
+        {
+            var renderer = applied.GetComponent<MeshRenderer>();
+            if (renderer != null) renderer.enabled = originalRendererEnabled;
+            Plugin.Emit("TransmogRestored", new { reason });
+        }
+        applied = null;
+        if (visualObject != null) { visualObject.SetActive(false); UObject.Destroy(visualObject); }
+        visualObject = null;
+    }
+
+    private static void Reject(string reason)
+    {
+        status = "Not applied: " + reason;
+        Plugin.Emit("TransmogSkipped", new { reason });
+    }
+
+    internal static void Draw()
+    {
+        if (!ShowPanel.Value || shop == null) return;
+        GUI.Box(new Rect(16, 16, 580, 154), "Bazaar Decor Transmog 0.2.2 - OrnamentS slot " + Slot.Value);
+        GUI.Label(new Rect(28, 44, 550, 24), "Actual / effects: " + actual);
+        GUI.Label(new Rect(28, 68, 550, 24), "Visual target: " + visual);
+        GUI.Label(new Rect(28, 92, 550, 24), status);
+        if (GUI.Button(new Rect(28, 124, 190, 28), Enabled.Value ? "Disable / restore" : "Enable transmog"))
+        {
+            Enabled.Value = !Enabled.Value;
+            Restore("panel toggle");
+            attemptedInstance = 0;
+        }
+    }
+}
+
+public sealed class PrototypeDriver : MonoBehaviour
+{
+    public PrototypeDriver(IntPtr pointer) : base(pointer) { }
+    public void Update() => Plugin.Guard("transmog-update", Prototype.Tick);
+    public void OnGUI() => Plugin.Guard("transmog-panel", Prototype.Draw);
+    public void OnDestroy() => Plugin.Guard("transmog-cleanup", () => Prototype.Restore("driver destroyed"));
+}
+
+[HarmonyPatch(typeof(BazaarMyShop), nameof(BazaarMyShop.LoadBazaarPartsModel))]
+internal static class ObserveShop
+{
+    static void Prefix(BazaarMyShop __instance) => Plugin.Guard("observe-shop", () => Prototype.Observe(__instance));
+}
+
+[HarmonyPatch(typeof(BazaarManager), nameof(BazaarManager.OpenBazaarCustomMenu), new Type[] { })]
+internal static class BeforeEditing
+{
+    static void Prefix() => Plugin.Guard("before-editor", Prototype.Suspend);
+}
