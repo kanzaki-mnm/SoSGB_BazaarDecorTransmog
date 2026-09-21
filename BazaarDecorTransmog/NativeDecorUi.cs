@@ -68,9 +68,6 @@ internal static class NativeDecorUi
     // Expand the veil along the icon silhouette, in source-texture pixels. This
     // covers the game's dark icon rim without making the whole card look larger.
     private const int ActualVeilOutlinePixels = 2;
-    private static readonly HashSet<string> reportedIconTints = new();
-    private static Image trialObjectImage;
-    private static float trialAlphaSampleAt;
     private static readonly Dictionary<BazaarCustomPageCategory, BazaarCustomItemData> actualChoiceData = new();
     private static readonly Dictionary<BazaarCustomPageCategory, BazaarCustomItemData> addedHiddenChoiceData = new();
     private static string note = "Select a supported decor tab. Confirm changes appearance only.";
@@ -93,7 +90,6 @@ internal static class NativeDecorUi
         exitPosePreserving = false;
         bool wasActive = Active;
         Active = false;
-        ClearIconTrial();
         RestoreChoiceLists();
         lastFocusData = null;
         RestoreModeTitle();
@@ -109,7 +105,6 @@ internal static class NativeDecorUi
             if (page.bazaarCustomDetail != null) page.bazaarCustomDetail.gameObject.SetActive(detailActive);
             if (page.bazaarEffectDetail != null) page.bazaarEffectDetail.gameObject.SetActive(effectsActive);
         }
-        if (wasActive) Prototype.NativeEvidence("exit");
         if (wasTransitioning && FadeManager.IsInstance)
             FadeManager.FadeIn(fadeSpeed: ModeTransitionFadeSpeed);
         note = Prototype.Enabled
@@ -156,7 +151,6 @@ internal static class NativeDecorUi
             new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStringArray(0L));
         manager.OpenDialog(UILoadKey.DefaultDialog, data, DialogMaskType.Translucent,
             UIDialogManager.AnchorType.Center, false, true, null, null);
-        Plugin.Emit("AppearanceExitConfirmationOpened", new { });
     }
 
     private static void OnExitChoice(int index)
@@ -171,7 +165,6 @@ internal static class NativeDecorUi
             leave = true;
         }
         RestoreExitPose();
-        Plugin.Emit("AppearanceExitChoice", new { index, leave });
 
         var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
         if (manager == null)
@@ -199,7 +192,6 @@ internal static class NativeDecorUi
         exitPoseHovered = Prototype.CurrentEditorPoseHovered;
         exitPosePreserving = true;
         RestoreExitPose();
-        Plugin.Emit("AppearanceExitPoseCaptured", new { hovered = exitPoseHovered });
     }
 
     private static void RestoreExitPose()
@@ -271,19 +263,7 @@ internal static class NativeDecorUi
         if (Active)
         {
             ApplyModeTitle();
-            if (trialObjectImage != null && trialAlphaSampleAt > 0f &&
-                Time.unscaledTime >= trialAlphaSampleAt)
-            {
-                trialAlphaSampleAt = 0f;
-                Plugin.Emit("IconTrialAlpha", new
-                {
-                    requested = 0.1f,
-                    imageAlpha = trialObjectImage.color.a,
-                    rendererAlpha = trialObjectImage.canvasRenderer.GetColor().a,
-                    material = trialObjectImage.material?.shader?.name,
-                    sprite = trialObjectImage.sprite?.name
-                });
-            }
+
         }
     }
 
@@ -301,11 +281,6 @@ internal static class NativeDecorUi
             if (!dialogOpen && !suppressAppearanceGuideUntilPageExit)
                 appearanceGuideResumeFrame = Time.frameCount + 2;
             RefreshOfficialFooter();
-            Plugin.Emit("NativeAppearanceGuideDialogState", new
-            {
-                hidden = dialogOpen,
-                resumeFrame = appearanceGuideResumeFrame
-            });
             return;
         }
         if (!dialogOpen && appearanceGuideResumeFrame >= 0 &&
@@ -313,7 +288,6 @@ internal static class NativeDecorUi
         {
             appearanceGuideResumeFrame = -1;
             RefreshOfficialFooter();
-            Plugin.Emit("NativeAppearanceGuideResumed", new { frame = Time.frameCount });
         }
     }
 
@@ -329,12 +303,6 @@ internal static class NativeDecorUi
             suppressAppearanceGuideUntilPageExit = false;
             appearanceGuideResumeFrame = Time.frameCount + 2;
         }
-        Plugin.Emit("NativeStockObjectExitChoice", new
-        {
-            index,
-            suppressUntilPageExit = suppressAppearanceGuideUntilPageExit,
-            resumeFrame = appearanceGuideResumeFrame
-        });
     }
 
     internal static void RefreshAfterPresetLoad()
@@ -352,7 +320,6 @@ internal static class NativeDecorUi
         // The player may have hovered a different item in the normal editor, leaving
         // that item's model on screen even though it was never equipped.
         int actualFocusId = page.GetSetFocusId(page.selectTabCategory);
-        Prototype.NativeEvidence("appearance-enter");
         detailActive = page.bazaarCustomDetail != null && page.bazaarCustomDetail.gameObject.activeSelf;
         effectsActive = page.bazaarEffectDetail != null && page.bazaarEffectDetail.gameObject.activeSelf;
         detailIconActive = page.bazaarCustomDetail?.icon != null && page.bazaarCustomDetail.icon.gameObject.activeSelf;
@@ -378,7 +345,6 @@ internal static class NativeDecorUi
     {
         if (!Active) return;
         Active = false;
-        ClearIconTrial();
         RestoreChoiceLists();
         RestoreModeTitle();
         Prototype.EndNativePreview();
@@ -395,7 +361,6 @@ internal static class NativeDecorUi
         }
         EndExitPosePreservation();
         RefreshOfficialFooter();
-        Prototype.NativeEvidence("appearance-exit");
         note = "Editing actual placement and effects; Transmog remains ON outside the editor.";
     }
 
@@ -434,12 +399,6 @@ internal static class NativeDecorUi
             note = data == null || data.PartsData == null || data.IsUiRemove
                 ? "Empty has no appearance to preview; appearance mode remains active."
                 : "Changing decor tab; appearance mode remains active.";
-            Plugin.Emit("NativeUiFocusIgnored", new
-            {
-                category = category.ToString(),
-                reason = data == null ? "null" : data.PartsData == null ? "no-parts" :
-                    data.IsUiRemove ? "empty" : "category-mismatch"
-            });
             return;
         }
         int index = BazaarCustomItemData.ToPartsCategoryIndex(category);
@@ -523,16 +482,9 @@ internal static class NativeDecorUi
             var item = items[i];
             if (item?.PartsData == null || IsActualChoice(item) || item.PartsData.Id != appearanceId) continue;
             focusId = i;
-            Plugin.Emit("NativeAppearanceFocus", new
-            {
-                category = category.ToString(),
-                slot,
-                appearanceId,
-                focusId
-            });
             return true;
         }
-        Plugin.Emit("NativeAppearanceFocusMissing", new { category = category.ToString(), slot, appearanceId });
+        Plugin.Warn("NativeAppearanceFocusMissing", new { category = category.ToString(), slot, appearanceId });
         return false;
     }
 
@@ -691,9 +643,6 @@ internal static class NativeDecorUi
         var itemImage = icon.icon?.icon;
         if (itemImage != null)
         {
-            var beforeColor = itemImage.color;
-            var beforeRendererColor = itemImage.canvasRenderer.GetColor();
-            var beforeMaterial = itemImage.material;
             // Keep the source art visible. A separate white silhouette made from its
             // alpha lightens only the item's pixels, without tinting the cream card.
             itemImage.color = Color.white;
@@ -708,20 +657,6 @@ internal static class NativeDecorUi
             {
                 if (veil != null) veil.gameObject.SetActive(false);
             }
-            uint itemId = icon.cacheData.PartsData?.Id ?? 0;
-            string reportKey = icon.cacheData.Category + ":" + itemId + ":" + followActual;
-            if (reportedIconTints.Add(reportKey) && (followActual ||
-                actualChoiceData.TryGetValue(icon.cacheData.Category, out var actual) && actual.PartsData?.Id == itemId))
-                Plugin.Emit("NativeIconTint", new
-                {
-                    category = icon.cacheData.Category.ToString(), itemId, followActual,
-                    state = icon.icon?.curState.ToString(),
-                    sprite = (itemImage.overrideSprite ?? itemImage.sprite)?.name,
-                    beforeColor = new { beforeColor.r, beforeColor.g, beforeColor.b, beforeColor.a },
-                    rendererColor = new { beforeRendererColor.r, beforeRendererColor.g, beforeRendererColor.b, beforeRendererColor.a },
-                    material = beforeMaterial?.name, shader = beforeMaterial?.shader?.name,
-                    canvasGroupAlpha = itemImage.GetComponentInParent<CanvasGroup>()?.alpha
-                });
         }
         UpdateActualAppearanceBadge(icon);
     }
@@ -828,7 +763,7 @@ internal static class NativeDecorUi
         }
         catch (Exception error)
         {
-            Plugin.Emit("WhiteIconFailed", new { sprite = source.name, error = error.Message });
+            Plugin.Warn("WhiteIconFailed", new { sprite = source.name, error = error.Message });
             return null;
         }
         finally
@@ -837,39 +772,6 @@ internal static class NativeDecorUi
             if (target != null) RenderTexture.ReleaseTemporary(target);
             if (readback != null) UnityEngine.Object.Destroy(readback);
         }
-    }
-
-    private static void UpdateIconTrial(Image source)
-    {
-        if (!Active || source == null) return;
-        var sprite = source.overrideSprite ?? source.sprite;
-        if (sprite == null) return;
-        var canvas = source.GetComponentInParent<Canvas>();
-        if (canvas == null) return;
-        if (trialObjectImage == null)
-        {
-            var clone = UnityEngine.Object.Instantiate(source.gameObject, canvas.transform);
-            clone.name = "BazaarDecorTransmog.IconTrial";
-            trialObjectImage = clone.GetComponent<Image>();
-            if (trialObjectImage == null) { UnityEngine.Object.Destroy(clone); return; }
-            var rect = trialObjectImage.rectTransform;
-            rect.anchorMin = rect.anchorMax = new Vector2(0.5f, 0.5f);
-            rect.pivot = new Vector2(0.5f, 0.5f);
-            rect.anchoredPosition = Vector2.zero;
-            rect.sizeDelta = new Vector2(120f, 120f);
-            trialObjectImage.raycastTarget = false;
-            clone.transform.SetAsLastSibling();
-            trialAlphaSampleAt = Time.unscaledTime + 0.5f;
-        }
-        trialObjectImage.sprite = sprite;
-        trialObjectImage.color = new Color(1f, 1f, 1f, 0.1f);
-    }
-
-    private static void ClearIconTrial()
-    {
-        if (trialObjectImage != null) UnityEngine.Object.Destroy(trialObjectImage.gameObject);
-        trialObjectImage = null;
-        trialAlphaSampleAt = 0f;
     }
 
     // Only the synthetic first card carries this badge. The ordinary owned-item card
@@ -897,7 +799,7 @@ internal static class NativeDecorUi
             var template = icon.PutIcon?.GetComponent<Image>();
             if (template == null)
             {
-                Plugin.Emit("NativeActualBadgeMissingTemplate", new { page = page?.name, reason = "no stock icon image" });
+                Plugin.Warn("NativeActualBadgeMissingTemplate", new { page = page?.name, reason = "no stock icon image" });
                 return;
             }
             var badgeObject = UnityEngine.Object.Instantiate(template.gameObject, icon.transform);
@@ -910,12 +812,6 @@ internal static class NativeDecorUi
             badge.color = Color.white;
             badge.raycastTarget = false;
             badge.transform.SetAsLastSibling();
-            Plugin.Emit("NativeActualBadgeImageCreated", new
-            {
-                sprite = badge.sprite?.name,
-                template = TransformPath(template.transform),
-                path = TransformPath(badge.transform)
-            });
         }
         else badge = existing.GetComponent<Image>();
 
@@ -942,14 +838,14 @@ internal static class NativeDecorUi
         using var stream = typeof(NativeDecorUi).Assembly.GetManifestResourceStream(resource);
         if (stream == null)
         {
-            Plugin.Emit("NativeActualBadgeImageMissing", new { resource });
+            Plugin.Warn("NativeActualBadgeImageMissing", new { resource });
             return null;
         }
         const int size = 128;
         var pixels = new byte[size * size * 4];
         if (stream.Read(pixels, 0, pixels.Length) != pixels.Length)
         {
-            Plugin.Emit("NativeActualBadgeImageInvalid", new { resource });
+            Plugin.Warn("NativeActualBadgeImageInvalid", new { resource });
             return null;
         }
         actualAppearanceBadgeTexture = new Texture2D(size, size, TextureFormat.RGBA32, false);
@@ -987,11 +883,6 @@ internal static class NativeDecorUi
         int focusId = page.GetSetFocusId(page.selectTabCategory);
         if (focusId < 0) return;
         page.partsScrollGroup?.SetFocus(focusId);
-        Plugin.Emit("NativeActualFocusRestored", new
-        {
-            category = page.selectTabCategory.ToString(),
-            focusId
-        });
     }
 
     private static bool FocusAppliedAppearance(BazaarCustomPageCategory category)
@@ -1021,12 +912,6 @@ internal static class NativeDecorUi
         try
         {
             page.OnFocusIn(items[focusId], category);
-            Plugin.Emit("NativeAppearanceSourceReset", new
-            {
-                category = category.ToString(),
-                focusId,
-                id = items[focusId].PartsData?.Id
-            });
         }
         finally { allowStockFocus = false; }
     }
@@ -1039,11 +924,6 @@ internal static class NativeDecorUi
         if (!exitPosePreserving || exitPoseHovered) return false;
         RememberFocus(data, category);
         RestoreExitPose();
-        Plugin.Emit("AppearanceExitGroundedFocusSuppressed", new
-        {
-            category = category.ToString(),
-            id = data?.PartsData?.Id
-        });
         return true;
     }
 
@@ -1090,15 +970,12 @@ internal static class NativeDecorUi
                 if (modeBackground != null) originalBackgroundColor = modeBackground.color;
                 modeIcon = header.icon;
                 if (modeIcon != null) originalIconColor = modeIcon.color;
-                Plugin.Emit("NativeModeTitleFound", new { name = text.name, path = TransformPath(text.transform),
-                    text = text.text, replacement, background = modeBackground?.name,
-                    sprite = modeBackground?.sprite?.name, icon = modeIcon?.name, iconSprite = modeIcon?.sprite?.name });
                 break;
             }
             if (modeTitle == null && !titleSearchReported)
             {
                 titleSearchReported = true;
-                Plugin.Emit("NativeModeTitleNotFound", new { expected = new[] { "オブジェの変更", "Redecorate" } });
+                Plugin.Warn("NativeModeTitleNotFound", new { expected = new[] { "オブジェの変更", "Redecorate" } });
             }
         }
         if (modeTitle == null) return;
@@ -1168,12 +1045,6 @@ internal static class NativeDecorUi
             if (appearanceGuide != null)
             {
                 if (appearanceGuide.collider != null) appearanceGuide.collider.enabled = false;
-                Plugin.Emit("NativeAppearanceGuideCreated", new
-                {
-                    source = "UIMenuFooter.CreateGuide",
-                    path = TransformPath(appearanceGuide.transform),
-                    button = appearanceGuide.button.ToString()
-                });
             }
             else if (!footerRefreshRequested && menuFooter != null)
             {
@@ -1182,7 +1053,7 @@ internal static class NativeDecorUi
             else if (menuFooter == null && !guideSearchReported)
             {
                 guideSearchReported = true;
-                Plugin.Emit("NativeMenuFooterNotFound", new { page = page.name });
+                Plugin.Warn("NativeMenuFooterNotFound", new { page = page.name });
             }
         }
     }
@@ -1196,12 +1067,6 @@ internal static class NativeDecorUi
         footerRefreshRequested = true;
         appearanceGuide = null;
         menuFooter.SetGuide((KeyButtonGuideMasterId)(uint)menuFooter.LastGuideId);
-        Plugin.Emit("NativeMenuFooterRefresh", new
-        {
-            guideId = menuFooter.LastGuideId,
-            appearance = Active,
-            route = "UIMenuFooter.SetGuide"
-        });
     }
 
     private static void RemoveAppearanceGuide()
@@ -1276,13 +1141,6 @@ internal static class NativeDecorUi
         return false;
     }
 
-    private static string TransformPath(Transform value)
-    {
-        var names = new List<string>();
-        for (var current = value; current != null; current = current.parent) names.Add(current.name);
-        names.Reverse();
-        return string.Join("/", names);
-    }
 }
 
 [HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.UpdateCachePartsList),
@@ -1360,12 +1218,10 @@ internal static class NativeAppearanceFooterGuideData
             // Keep it intact and add South as B / Cancel.  GuideKey names are
             // logical positions, not Nintendo face-button labels.
             var hasCancel = false;
-            var hasConfirm = false;
             for (var i = 0; i < __result.Count; i++)
             {
                 var guide = __result[i];
                 if (guide == null) continue;
-                if (guide.button == GuideKey.East) hasConfirm = true;
                 if (guide.button == GuideKey.South)
                 {
                     hasCancel = true;
@@ -1380,12 +1236,6 @@ internal static class NativeAppearanceFooterGuideData
                     LocalizeTextTableType.KeyButtonGuideText,
                     InputKeyBind.InputActionSet.Menu));
             }
-            Plugin.Emit("PresetNameFooterGuideInjected", new
-            {
-                count = __result.Count,
-                hasConfirm,
-                hasCancel = true
-            });
             return;
         }
         if (PresetUiProbe.IsSlotMenuOpen)
@@ -1437,12 +1287,6 @@ internal static class NativeAppearanceFooterGuideData
             LocalizeTextTableType.KeyButtonGuideText,
             InputKeyBind.InputActionSet.Menu);
         __result.Insert(0, data);
-        Plugin.Emit("NativeMenuFooterGuideInjected", new
-        {
-            textId = NativeDecorUi.CurrentGuideTextId,
-            count = __result.Count,
-            route = "UIMenuFooter.SortGuide"
-        });
     }
 }
 
@@ -1452,11 +1296,6 @@ internal static class NativeAppearanceDetailGuard
     static bool Prefix()
     {
         if (!NativeDecorUi.Active) return true;
-        Plugin.Emit("NativeAppearanceDetailBlocked", new
-        {
-            action = "Y/LShift",
-            route = "UIBazaarCustomPage.OnShowDetail"
-        });
         return false;
     }
 }
@@ -1474,11 +1313,6 @@ internal static class NativeAppearanceDetailInputGuard
         // detail guard consumes it.
         if (PresetUiProbe.TryOpenDeleteForFocusedSlot()) return false;
         if (!NativeDecorUi.Active) return true;
-        Plugin.Emit("NativeAppearanceDetailInputBlocked", new
-        {
-            action = "Y/LShift",
-            route = "ControllableUI.OnNorth"
-        });
         return false;
     }
 }
@@ -1546,7 +1380,6 @@ internal static class NativeAppearanceTabPreviewGuard
         // The stock tab transition briefly reloads the outgoing slot's real/effect model
         // before the list sends its new focus. Our focus handler supplies the appearance
         // preview immediately afterward, so the intermediate real-model reload is unwanted.
-        Plugin.Emit("NativeAppearanceTabPreviewBlocked", new { category = category.ToString() });
         return false;
     }
 }
@@ -1554,93 +1387,12 @@ internal static class NativeAppearanceTabPreviewGuard
 [HarmonyPatch(typeof(UIBazaarCustomPartsIconContent), nameof(UIBazaarCustomPartsIconContent.UpdateContentUniqueData))]
 internal static class NativeAppearanceCheckmark
 {
-    private static bool banSpriteReported;
-
     static void Postfix(UIBazaarCustomPartsIconContent __instance)
     {
-        if (!banSpriteReported && __instance?.banIconSprite != null)
-            Plugin.Guard("ban-sprite-spec", () => ReportBanSprite(__instance));
         if (NativeDecorUi.Active)
             Plugin.Guard("appearance-checkmark", () => NativeDecorUi.UpdateCheckmark(__instance));
     }
 
-    private static void ReportBanSprite(UIBazaarCustomPartsIconContent icon)
-    {
-        var sprite = icon.banIconSprite;
-        if (sprite == null) return;
-        var rect = sprite.rect;
-        var matchingImages = icon.GetComponentsInChildren<Image>(true)
-            .Where(image => image != null && image.sprite != null && image.sprite.name == sprite.name)
-            .Select(image => new
-            {
-                name = image.name,
-                width = image.rectTransform.rect.width,
-                height = image.rectTransform.rect.height,
-                preserveAspect = image.preserveAspect,
-                imageType = image.type.ToString(),
-                scaleX = image.rectTransform.localScale.x,
-                scaleY = image.rectTransform.localScale.y
-            }).ToArray();
-        var putIcon = icon.PutIcon;
-        object[] putIconImages = putIcon != null
-            ? putIcon.GetComponentsInChildren<Image>(true).Select(image => new
-            {
-                name = image.name,
-                sprite = image.sprite != null ? image.sprite.name : null,
-                width = image.rectTransform.rect.width,
-                height = image.rectTransform.rect.height,
-                preserveAspect = image.preserveAspect,
-                imageType = image.type.ToString(),
-                scaleX = image.rectTransform.localScale.x,
-                scaleY = image.rectTransform.localScale.y
-            }).Cast<object>().ToArray()
-            : Array.Empty<object>();
-        Plugin.Emit("BanIconAssetSpec", new
-        {
-            sprite = sprite.name,
-            rectX = rect.x,
-            rectY = rect.y,
-            width = rect.width,
-            height = rect.height,
-            pivotX = sprite.pivot.x,
-            pivotY = sprite.pivot.y,
-            pixelsPerUnit = sprite.pixelsPerUnit,
-            textureWidth = sprite.texture != null ? sprite.texture.width : 0,
-            textureHeight = sprite.texture != null ? sprite.texture.height : 0,
-            iconWidth = icon.GetComponent<RectTransform>()?.rect.width ?? 0f,
-            iconHeight = icon.GetComponent<RectTransform>()?.rect.height ?? 0f,
-            putIconWidth = putIcon?.GetComponent<RectTransform>()?.rect.width ?? 0f,
-            putIconHeight = putIcon?.GetComponent<RectTransform>()?.rect.height ?? 0f,
-            images = matchingImages,
-            putIconImages
-        });
-        var atlasTexture = sprite.texture;
-        var loadedSprites = Resources.FindObjectsOfTypeAll<Sprite>();
-        var nearbySprites = loadedSprites
-            .Where(other => other != null && other.texture != null && atlasTexture != null
-                && other.texture.GetInstanceID() == atlasTexture.GetInstanceID())
-            .Select(other => new
-            {
-                name = other.name,
-                width = other.rect.width,
-                height = other.rect.height,
-                x = other.rect.x,
-                y = other.rect.y
-            })
-            .OrderBy(other => other.name).ToArray();
-        var relatedSprites = loadedSprites
-            .Where(other => other != null && other.name != null
-                && (other.name.Contains("return", StringComparison.OrdinalIgnoreCase)
-                    || other.name.Contains("reset", StringComparison.OrdinalIgnoreCase)
-                    || other.name.Contains("refresh", StringComparison.OrdinalIgnoreCase)
-                    || other.name.Contains("revert", StringComparison.OrdinalIgnoreCase)
-                    || other.name.Contains("change", StringComparison.OrdinalIgnoreCase)
-                    || other.name.Contains("arrow", StringComparison.OrdinalIgnoreCase)))
-            .Select(other => new { name = other.name, width = other.rect.width, height = other.rect.height })
-            .OrderBy(other => other.name).Take(150).ToArray();
-        Plugin.Emit("LoadedUiSpriteCandidates", new { loadedCount = loadedSprites.Length, nearbySprites, relatedSprites });
-        banSpriteReported = true;
-    }
 }
 
 [HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.OnDeside))]
@@ -1683,7 +1435,6 @@ internal static class NativePlacementGuard
     {
         __state = !NativeDecorUi.Active;
         if (__state) return true;
-        Plugin.Emit("NativePlacementBlocked", new { itemId, category = category.ToString(), index });
         return false;
     }
 
@@ -1715,7 +1466,6 @@ internal static class NativePresetStartProbe
     static bool Prefix()
     {
         if (!NativeDecorUi.Active) return true;
-        Plugin.Emit("NativePresetStartInput", new { route = "UIMenuManager.OnStart" });
         Plugin.Guard("preset-dialog-probe", PresetUiProbe.Open);
         return false;
     }

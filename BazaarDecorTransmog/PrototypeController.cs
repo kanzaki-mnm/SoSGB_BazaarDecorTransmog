@@ -45,7 +45,7 @@ internal static class Prototype
             storageBlocked = true;
             saved = new PresetFile { Presets = new() { new VisualPreset { Name = "Recovery" } } };
             message = "Preset file error: file preserved; saving blocked. See log.";
-            Plugin.Emit("PresetFileError", new { filePath, error = ex.Message });
+            Plugin.Warn("PresetFileError", new { filePath, error = ex.Message });
         }
         LoadDraft(saved.CurrentAppearance ??
             saved.Presets[0]);
@@ -191,12 +191,11 @@ internal static class Prototype
             PresetStorage.Save(filePath, candidate);
             saved = candidate;
             dirty = false;
-            Plugin.Emit("CurrentAppearanceSaved", new { visualSlots = current.Slots.Count, filePath });
             return true;
         }
         catch (Exception ex)
         {
-            Plugin.Emit("CurrentAppearanceSaveError", new { error = ex.Message });
+            Plugin.Warn("CurrentAppearanceSaveError", new { error = ex.Message });
             return false;
         }
     }
@@ -206,7 +205,6 @@ internal static class Prototype
         if (appearanceEntrySnapshot == null) return;
         LoadDraft(appearanceEntrySnapshot);
         NativeDecorUi.RefreshAfterPresetLoad();
-        Plugin.Emit("CurrentAppearanceChangesDiscarded", new { visualSlots = draft.Slots.Count });
     }
 
     internal static void EndAppearanceSession() => appearanceEntrySnapshot = null;
@@ -245,11 +243,6 @@ internal static class Prototype
         // materials have been initialized.
     }
 
-    internal static void NativeEvidence(string stage)
-    {
-        if (shop != null && shop.BM != null) Plugin.Snapshot(shop.BM, "native-ui:" + stage);
-    }
-
     internal static void NativeChoice(int index, CustomPartsMasterData part, bool commit)
     {
         if (shop == null) return;
@@ -266,11 +259,9 @@ internal static class Prototype
         var choice = new VisualSlot { Index = index, Category = part.Category.ToString(), ItemId = part.Id, ModelName = part.modelName };
         if (commit)
         {
-            NativeEvidence("before-choice");
             draft.Slots.RemoveAll(s => Matches(s, selectedSlot));
             draft.Slots.Add(choice);
             dirty = true;
-            NativeEvidence("after-choice");
         }
         EditorPreview = true;
         slots[selectedSlot].Bind(choice);
@@ -318,12 +309,10 @@ internal static class Prototype
         selectedSlot = nextSlot;
         if (commit)
         {
-            NativeEvidence("before-mode-choice");
             draft.Slots.RemoveAll(s => Matches(s, selectedSlot));
             if (mode == "Hidden")
                 draft.Slots.Add(new VisualSlot { Index = index, Category = category.ToString(), Mode = mode });
             dirty = true;
-            NativeEvidence("after-mode-choice");
         }
         EditorPreview = true;
         slots[selectedSlot].Bind(mode == "Actual" ? null :
@@ -352,12 +341,6 @@ internal static class Prototype
         // placement after the game finishes loading it.
         ClosedTentProbe.RestoreAll("actual placement changed");
         ClosedShelfProbe.RestoreAll("actual placement changed");
-        Plugin.Emit("ActualPlacementTransmogInvalidated", new
-        {
-            category = category.ToString(),
-            index,
-            runtime
-        });
     }
 
     internal static void Tick()
@@ -443,9 +426,8 @@ internal static class Prototype
             saved = candidate;
             LoadDraft(value);
             message = "Saved: " + name;
-            Plugin.Emit("PresetSaved", new { name, slots = value.Slots, filePath });
         }
-        catch (Exception ex) { message = "Save failed. Existing preset retained."; Plugin.Emit("PresetSaveError", new { error = ex.Message }); }
+        catch (Exception ex) { message = "Save failed. Existing preset retained."; Plugin.Warn("PresetSaveError", new { error = ex.Message }); }
     }
 
     internal static string UiSlotLabel(int index)
@@ -481,14 +463,13 @@ internal static class Prototype
             RefreshFieldModelsNow();
             NativeDecorUi.RefreshAfterPresetLoad();
             message = "Loaded slot " + (index + 1) + ": " + preset.Name;
-            Plugin.Emit("PresetUiLoaded", new { slot = index + 1, name = preset.Name, visualSlots = preset.Slots.Count });
             return true;
         }
         catch (Exception ex)
         {
             try { LoadDraft(previous); NativeDecorUi.RefreshAfterPresetLoad(); }
-            catch (Exception rollbackError) { Plugin.Emit("PresetUiLoadRollbackError", new { error = rollbackError.Message }); }
-            Plugin.Emit("PresetUiLoadError", new { slot = index + 1, error = ex.Message });
+            catch (Exception rollbackError) { Plugin.Warn("PresetUiLoadRollbackError", new { error = rollbackError.Message }); }
+            Plugin.Warn("PresetUiLoadError", new { slot = index + 1, error = ex.Message });
             return false;
         }
     }
@@ -497,13 +478,13 @@ internal static class Prototype
     {
         if (storageBlocked || saved == null || draft == null || index < 0 || index >= PresetStorage.UiSlotCount)
         {
-            Plugin.Emit("PresetUiSaveRejected", new { reason = "storage unavailable or invalid slot", slot = index + 1 });
+            Plugin.Warn("PresetUiSaveRejected", new { reason = "storage unavailable or invalid slot", slot = index + 1 });
             return false;
         }
         string name = (enteredName ?? string.Empty).Trim();
         if (name.Length == 0 || name.Length > 8)
         {
-            Plugin.Emit("PresetUiSaveRejected", new { reason = "invalid name", slot = index + 1 });
+            Plugin.Warn("PresetUiSaveRejected", new { reason = "invalid name", slot = index + 1 });
             return false;
         }
         var candidate = CopySavedFile();
@@ -519,13 +500,12 @@ internal static class Prototype
             saved = candidate;
             LoadDraft(value);
             message = "Saved slot " + (index + 1) + ": " + name;
-            Plugin.Emit("PresetUiSaved", new { slot = index + 1, name, visualSlots = value.Slots.Count, filePath });
             return true;
         }
         catch (Exception ex)
         {
             message = "Save failed. Existing preset retained.";
-            Plugin.Emit("PresetUiSaveError", new { slot = index + 1, error = ex.Message });
+            Plugin.Warn("PresetUiSaveError", new { slot = index + 1, error = ex.Message });
             return false;
         }
     }
@@ -534,13 +514,13 @@ internal static class Prototype
     {
         if (storageBlocked || saved == null || index < 0 || index >= PresetStorage.UiSlotCount)
         {
-            Plugin.Emit("PresetUiDeleteRejected", new { reason = "storage unavailable or invalid slot", slot = index + 1 });
+            Plugin.Warn("PresetUiDeleteRejected", new { reason = "storage unavailable or invalid slot", slot = index + 1 });
             return false;
         }
         var existing = UiSlotPreset(index);
         if (existing == null)
         {
-            Plugin.Emit("PresetUiDeleteRejected", new { reason = "empty slot", slot = index + 1 });
+            Plugin.Warn("PresetUiDeleteRejected", new { reason = "empty slot", slot = index + 1 });
             return false;
         }
         var candidate = CopySavedFile();
@@ -555,12 +535,11 @@ internal static class Prototype
             PresetStorage.Save(filePath, candidate);
             saved = candidate;
             message = "Deleted slot " + (index + 1) + ": " + existing.Name;
-            Plugin.Emit("PresetUiDeleted", new { slot = index + 1, name = existing.Name, filePath });
             return true;
         }
         catch (Exception ex)
         {
-            Plugin.Emit("PresetUiDeleteError", new { slot = index + 1, name = existing.Name, error = ex.Message });
+            Plugin.Warn("PresetUiDeleteError", new { slot = index + 1, name = existing.Name, error = ex.Message });
             return false;
         }
     }
@@ -631,8 +610,3 @@ internal static class Prototype
         GUI.Label(new Rect(x + 12, y + 404, 575, 28), message);
     }
 }
-
-
-
-
-

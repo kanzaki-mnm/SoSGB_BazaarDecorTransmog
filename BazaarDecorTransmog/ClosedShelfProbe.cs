@@ -49,7 +49,7 @@ internal static class ClosedShelfProbe
             {
                 Generation++;
                 Pending = false;
-                Plugin.Emit("ClosedShelfRejected", new { index, reason = "target request timed out" });
+                Plugin.Warn("ClosedShelfRejected", new { index, reason = "target request timed out" });
             }
             if (Source != null || Pending || Time.unscaledTime - RequestStarted < 0.5f) return;
 
@@ -66,7 +66,6 @@ internal static class ClosedShelfProbe
             RequestStarted = Time.unscaledTime;
             int ticket = ++Generation;
             int sourceInstance = model.GetInstanceID();
-            Plugin.Emit("ClosedShelfTransmogRequest", new { index, actualId, visualId, target.modelName, source = model.name });
             BazaarMyShopClosed.RM.GetLoadCustomPartsModelData(target.modelName,
                 (Il2CppSystem.Action<bool, GameObject>)((ok, prefab) => Plugin.Guard("closed-shelf-callback", () =>
                 {
@@ -78,7 +77,7 @@ internal static class ClosedShelfProbe
                         BindingKey(currentBinding) != bindingKey || ActualShelfId(BazaarMyShopClosed.BM, index) != actualId) return;
                     if (!ok || !SlotRuntime.ShelfVisualRoot(prefab))
                     {
-                        Plugin.Emit("ClosedShelfRejected", new { index, reason = "target root mesh unavailable", actualId, visualId });
+                        Plugin.Warn("ClosedShelfRejected", new { index, reason = "target root mesh unavailable", actualId, visualId });
                         return;
                     }
                     Apply(current, prefab, bindingKey, index, actualId, visualId);
@@ -103,11 +102,11 @@ internal static class ClosedShelfProbe
                 Filter.sharedMesh = targetFilter.sharedMesh;
                 Renderer.sharedMaterials = targetRenderer.sharedMaterials;
                 bool unchanged = ActualShelfId(BazaarMyShopClosed.BM, index) == actualId;
-                Plugin.Emit("ClosedShelfTransmogApplied", new { index, actualId, visualId, unchanged,
-                    sourceMesh = OriginalMesh.name, visualMesh = targetFilter.sharedMesh.name,
-                    sourceNode = sourceNode.name, visualNode = targetNode.name,
-                    preservedChildRenderers = model.GetComponentsInChildren<Renderer>(true).Length - 1 });
-                if (!unchanged) Restore("closed shelf placement verification mismatch");
+                if (!unchanged)
+                {
+                    Plugin.Warn("ClosedShelfVerificationMismatch", new { index, actualId });
+                    Restore("closed shelf placement verification mismatch");
+                }
             }
             catch { Restore("closed shelf apply failed"); throw; }
         }
@@ -116,7 +115,6 @@ internal static class ClosedShelfProbe
         {
             Generation++;
             Pending = false;
-            bool changed = Source != null;
             if (Filter != null && OriginalMesh != null) Filter.sharedMesh = OriginalMesh;
             if (Renderer != null && OriginalMaterials != null) Renderer.sharedMaterials = OriginalMaterials;
             Source = null;
@@ -125,7 +123,6 @@ internal static class ClosedShelfProbe
             Renderer = null;
             OriginalMesh = null;
             OriginalMaterials = null;
-            if (changed) Plugin.Emit("ClosedShelfTransmogRestored", new { index = Parts.m_PartsIndex, reason });
         }
 
     }
@@ -139,7 +136,6 @@ internal static class ClosedShelfProbe
         RemoveDead();
         if (entries.Any(e => e.Parts.Pointer == __instance.Pointer) || entries.Count >= 8) return;
         entries.Add(new Entry { Parts = __instance });
-        Plugin.Emit("ClosedShelfTracked", new { index = __instance.m_PartsIndex });
     });
 
     internal static void Tick()

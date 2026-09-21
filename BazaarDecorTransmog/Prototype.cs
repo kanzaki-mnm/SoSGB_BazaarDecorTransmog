@@ -203,15 +203,6 @@ internal sealed class SlotRuntime
         // height is therefore never a reliable baseline.
         editorGroundWorldY = 0f;
         editorGroundPosition = EditorPositionAtHeight(source, 0f);
-        Plugin.Emit("EditorFocusBaseline", new
-        {
-            category = PartCategory.ToString(), slot,
-            nativeRaised = nativeEditorFocusRaised,
-            localY = source.localPosition.y,
-            groundY = editorGroundPosition.y,
-            worldY = source.position.y,
-            groundWorldY = editorGroundWorldY
-        });
         nativeEditorFocusRaised = false;
     }
 
@@ -335,7 +326,6 @@ internal sealed class SlotRuntime
         requestStarted = Time.unscaledTime;
         status = "Loading visual...";
         int ticket = ++generation;
-        Plugin.Emit("TransmogRequest", new { category = PartCategory.ToString(), slot = slot, actualId, actual, visualId = resolved, visual, modelName = target.modelName });
         try
         {
             shop.RM.GetLoadCustomPartsModelData(target.modelName, (Il2CppSystem.Action<bool, GameObject>)((ok, prefab) =>
@@ -370,7 +360,6 @@ internal sealed class SlotRuntime
             maskedRenderers.Add((renderer, renderer.enabled));
             renderer.enabled = false;
         }
-        Plugin.Emit("FieldSourceMasked", new { category = PartCategory.ToString(), slot });
     }
 
     private void UnmaskSource()
@@ -552,7 +541,6 @@ internal sealed class SlotRuntime
         GameObject replacement = null;
         try
         {
-            Plugin.Emit("RenderBefore", new { original = RenderInfo(model), target = RenderInfo(prefab) });
             // Both objects passed the strict visual-only component check. Keep the original
             // mesh/renderer intact, including native batching and per-renderer properties.
             // Keep the replacement below the native slot transform. The stock editor's
@@ -582,11 +570,8 @@ internal sealed class SlotRuntime
             if (previous != null) { previous.SetActive(false); UObject.Destroy(previous); }
             if (focusAfterVisualId == visualId) { focusAfterVisualId = 0; focused = true; }
             ApplyFocusOffset();
-            Plugin.Emit("RenderAfter", new { original = RenderInfo(model), visual = RenderInfo(visualObject) });
             string after = Evidence(manager);
             bool unchanged = before == after;
-            Plugin.Emit("TransmogApplied", new { category = PartCategory.ToString(), actualId, visualId, slot = slot, editorPreview = manager.IsCustomMode, unchanged,
-                before = JsonSerializer.Deserialize<JsonElement>(before), after = JsonSerializer.Deserialize<JsonElement>(after) });
             if (!unchanged) { Restore("verification mismatch"); Reject("Verification failed; restored original"); return; }
             status = "ON - placement / sampled effects unchanged";
             TryPlayDecisionFeedback();
@@ -628,11 +613,6 @@ internal sealed class SlotRuntime
             ApplyFocusOffset();
             string after = Evidence(manager);
             bool unchanged = before == after;
-            Plugin.Emit("ShelfTransmogApplied", new { category = PartCategory.ToString(), actualId, visualId, slot,
-                editorPreview = manager.IsCustomMode, unchanged, sourceMesh = shelfMesh.name,
-                visualMesh = targetFilter.sharedMesh.name, sourceNode = sourceNode.name, visualNode = targetNode.name,
-                preservedChildRenderers = model.GetComponentsInChildren<Renderer>(true).Length - 1,
-                before = JsonSerializer.Deserialize<JsonElement>(before), after = JsonSerializer.Deserialize<JsonElement>(after) });
             if (!unchanged) { Restore("verification mismatch"); Reject("Verification failed; restored original"); return; }
             status = "ON - shelf shell changed; products / effects unchanged";
             TryPlayDecisionFeedback();
@@ -642,35 +622,6 @@ internal sealed class SlotRuntime
             if (!replacing) Restore("shelf apply failed");
             throw;
         }
-    }
-
-    private object Vector(Vector3 value) => new { x = value.x, y = value.y, z = value.z };
-
-    private object RenderInfo(GameObject model)
-    {
-        var nodes = new List<object>();
-        foreach (var node in model.GetComponentsInChildren<Transform>(true))
-            if (node.GetComponent<Renderer>() != null) nodes.Add(RenderNode(node.gameObject));
-        return new { name = model.name, rootPosition = Vector(model.transform.position),
-            rootScale = Vector(model.transform.localScale), nodes };
-    }
-
-    private object RenderNode(GameObject model)
-    {
-        var renderer = model.GetComponent<Renderer>();
-        var mesh = model.GetComponent<MeshFilter>()?.sharedMesh ?? model.GetComponent<SkinnedMeshRenderer>()?.sharedMesh;
-        var materials = new List<object>();
-        foreach (var material in renderer.sharedMaterials)
-            materials.Add(material == null ? null : new { name = material.name, shader = material.shader?.name, queue = material.renderQueue });
-        return new { name = model.name, active = model.activeInHierarchy, layer = model.layer,
-            position = Vector(model.transform.position), localPosition = Vector(model.transform.localPosition),
-            localScale = Vector(model.transform.localScale), worldScale = Vector(model.transform.lossyScale),
-            rotation = Vector(model.transform.localEulerAngles), enabled = renderer.enabled,
-            forcedOff = renderer.forceRenderingOff, batched = renderer.isPartOfStaticBatch,
-            mesh = mesh?.name, vertices = mesh?.vertexCount ?? 0, submeshes = mesh?.subMeshCount ?? 0,
-            meshCenter = mesh == null ? null : Vector(mesh.bounds.center),
-            meshSize = mesh == null ? null : Vector(mesh.bounds.size),
-            worldCenter = Vector(renderer.bounds.center), worldSize = Vector(renderer.bounds.size), materials };
     }
 
     private string Evidence(BazaarManager manager)
@@ -720,10 +671,6 @@ internal sealed class SlotRuntime
         focusAfterVisualId = 0;
         foreach (var original in originalRenderers)
             if (original.Renderer != null) original.Renderer.enabled = original.Enabled;
-        if (applied != null)
-        {
-            Plugin.Emit("TransmogRestored", new { slot, reason });
-        }
         originalRenderers.Clear();
         if (shelfFilter != null && shelfMesh != null) shelfFilter.sharedMesh = shelfMesh;
         if (shelfRenderer != null && shelfMaterials != null) shelfRenderer.sharedMaterials = shelfMaterials;
@@ -861,20 +808,12 @@ internal sealed class SlotRuntime
         if (target == null) return;
         decisionFeedbackPending = false;
         shop.PlayCustomAnim(PartCategory, slot, target);
-        Plugin.Emit("TransmogDecisionFeedback", new
-        {
-            category = PartCategory.ToString(),
-            index = slot,
-            visualId = appliedVisualId,
-            target = target.name,
-            route = "BazaarMyShop.PlayCustomAnim"
-        });
     }
 
     private void Reject(string reason)
     {
         status = "Not applied: " + reason;
-        Plugin.Emit("TransmogSkipped", new { slot, reason });
+        Plugin.Warn("TransmogSkipped", new { slot, reason });
     }
 
 }
@@ -903,4 +842,3 @@ internal static class BeforeEditing
 {
     static void Prefix() => Plugin.Guard("before-editor", Prototype.Suspend);
 }
-

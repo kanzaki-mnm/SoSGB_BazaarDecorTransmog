@@ -42,6 +42,8 @@ public sealed class PresetSnapshot
 
 internal static class PresetStorage
 {
+    // The host owns logging so storage can also run without Unity/BepInEx.
+    internal static Action<string, object> Report { get; set; }
     internal const int UiSlotCount = 6;
 
     internal static void Validate(PresetFile data)
@@ -95,7 +97,7 @@ internal static class PresetStorage
         try
         {
             var primary = LoadFile(path);
-            Plugin.Emit("AppearanceDataLoaded", new { source = "primary", path });
+            Report?.Invoke("AppearanceDataLoaded", new { source = "primary", path });
             return primary;
         }
         catch (Exception primaryError)
@@ -105,7 +107,7 @@ internal static class PresetStorage
             try
             {
                 var recovered = LoadFile(backup);
-                Plugin.Emit("AppearanceDataRecovered", new
+                Report?.Invoke("AppearanceDataRecovered", new
                 {
                     source = "external-backup",
                     path = backup,
@@ -135,7 +137,7 @@ internal static class PresetStorage
                 Presets = data.PreviousValidState.Presets?.Select(p => p.Copy()).ToList()
             };
             Validate(recovered);
-            Plugin.Emit("AppearanceDataRecovered", new { source = "embedded-previous-state", path });
+            Report?.Invoke("AppearanceDataRecovered", new { source = "embedded-previous-state", path });
             data = recovered;
         }
         data.SchemaVersion = 9;

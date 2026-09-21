@@ -31,7 +31,6 @@ if (args.Length > 0)
     Check("real shelf identity", 119051, rows, 119051, "fld_cst_019_02", "Shelf");
     Check("real shelf simulated ID migration", 119051, rows, 999999, "fld_cst_019_02", "Shelf");
 }
-Console.WriteLine($"{passed} checks passed.");
 
 void Assert(bool condition, string name)
 {
@@ -65,9 +64,11 @@ try
     PresetStorage.Save(path, loaded);
     Assert(File.ReadAllText(path + ".bak") == first, "previous valid file backed up");
     Assert(PresetStorage.Load(path).Presets[0].Slots.Count == 3, "overwrite and reload");
-    var invalid = new PresetFile { SchemaVersion = 6, Presets = new() { original } };
+    var invalid = new PresetFile { Presets = new() { new VisualPreset { Name = "" } } };
     string valid = File.ReadAllText(path);
-    try { PresetStorage.Save(path, invalid); } catch (InvalidDataException) { }
+    bool saveRejected = false;
+    try { PresetStorage.Save(path, invalid); } catch (InvalidDataException) { saveRejected = true; }
+    Assert(saveRejected, "invalid save throws");
     Assert(File.ReadAllText(path) == valid, "invalid save preserves existing file");
     var mixed = original.Copy();
     mixed.Slots.Add(new VisualSlot { Category = "Tent", Index = 0, ItemId = 119025, ModelName = "fld_cst_009_02" });
@@ -106,15 +107,19 @@ try
     File.WriteAllText(path, JsonSerializer.Serialize(new PresetFile { SchemaVersion = 1, Presets = new() { original } }));
     string legacy = File.ReadAllText(path);
     var migrated = PresetStorage.Load(path);
-    Assert(migrated.SchemaVersion == 5 && migrated.Presets[0].Slots.Count == 4 && File.ReadAllText(path) == legacy, "legacy preset loads without modifying file");
+    Assert(migrated.SchemaVersion == 9 && migrated.Presets[0].Slots.Count == 4 && File.ReadAllText(path) == legacy, "legacy preset loads without modifying file");
     PresetStorage.Save(path, migrated);
     Assert(File.ReadAllText(path + ".bak") == legacy, "migration preserves legacy backup");
     File.WriteAllText(path, "{broken");
+    Assert(PresetStorage.Load(path).Presets[0].Slots.Count == 4 && File.ReadAllText(path) == "{broken",
+        "malformed primary recovers external backup without modifying primary");
+    File.Delete(path + ".bak");
     bool rejected = false;
     try { PresetStorage.Load(path); } catch (JsonException) { rejected = true; }
     Assert(rejected && File.ReadAllText(path) == "{broken", "malformed file rejected without modification");
-    Reject(invalid, "future schema rejected");
-    Reject(new PresetFile { Presets = new() { original, original.Copy() } }, "duplicate names rejected");
+    Reject(new PresetFile { SchemaVersion = 10, Presets = new() { original } }, "future schema rejected by validator");
+    PresetStorage.Validate(new PresetFile { Presets = new() { original, original.Copy() } });
+    Assert(true, "duplicate names allowed");
     var duplicateSlot = original.Copy(); duplicateSlot.Slots.Add(duplicateSlot.Slots[0]);
     Reject(new PresetFile { Presets = new() { duplicateSlot } }, "duplicate slot rejected");
     var wrongCategory = original.Copy(); wrongCategory.Slots[0].Category = "Unknown";
@@ -140,4 +145,5 @@ finally
     foreach (string file in new[] { path, path + ".bak", path + ".tmp" }) if (File.Exists(file)) File.Delete(file);
     Directory.Delete(directory, false);
 }
+passed += StorageChecks.Run();
 Console.WriteLine($"Total: {passed} checks passed.");

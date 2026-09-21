@@ -8,8 +8,7 @@ using UnityEngine.UI;
 
 namespace BazaarDecorTransmog;
 
-// Temporary integration probe: it only opens stock UI and records outcomes.
-// It deliberately does not read or write any preset data.
+// Owns the preset flow while reusing the game's dialogs and preview rows.
 internal static class PresetUiProbe
 {
     internal enum HeaderMode
@@ -63,8 +62,6 @@ internal static class PresetUiProbe
     private static bool nameInputOpen;
     private static bool returnToSaveSlots;
     private static bool nameFooterRequested;
-    private static bool nameMasterReported;
-    private static int rowProbeRuns;
     private static bool rowLoadAttempted;
     private static Il2CppSystem.Action rowLoadedCallback;
     private static GameObject objectPreview;
@@ -80,13 +77,6 @@ internal static class PresetUiProbe
     private static Il2CppSystem.Action slotDialogClosedAfter;
     private static bool previewAttempted;
     private static int previewSlot = -1;
-    // Read-only, one-shot probe for the game's own save-overwrite confirmation.
-    // This lets us reuse its localized Yes/Cancel choices only after verifying
-    // that they belong to DialogChoiceText, the same table our preset menus use.
-    private static bool saveOverwriteCancelChoiceReported;
-    // Read-only, one-shot probe for the stock three-choice confirmation shown
-    // when leaving the ordinary object editor with unapplied changes.
-    private static bool objectEditExitChoicesReported;
     private static HeaderMode headerMode;
 
     private enum CompletionMessage
@@ -101,20 +91,15 @@ internal static class PresetUiProbe
 
     internal static void Open()
     {
-        if (rowProbeRuns < 3)
-        {
-            rowProbeRuns++;
-            Plugin.Guard("preset-row-probe", ProbeStockRows);
-        }
         if (!rowLoadAttempted)
         {
             rowLoadAttempted = true;
-            Plugin.Guard("preset-row-load-probe", ProbeLoadStockRows);
+            Plugin.Guard("preset-row-load", EnsureObjectPreviewTemplate);
         }
         var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
         if (manager == null)
         {
-            Plugin.Emit("PresetDialogProbeFailed", new { reason = "UIManager unavailable" });
+            Plugin.Warn("PresetDialogProbeFailed", new { reason = "UIManager unavailable" });
             return;
         }
 
@@ -130,82 +115,27 @@ internal static class PresetUiProbe
         var data = new UIDialogData(choices);
         manager.OpenDialog(UILoadKey.SelectDialog, data, DialogMaskType.Translucent,
             UIDialogManager.AnchorType.Center, false, true, null, null);
-        Plugin.Emit("PresetDialogProbeOpened", new { options = new[] { "save", "load" } });
     }
 
-    private static void ProbeStockRows()
-    {
-        var rows = Resources.FindObjectsOfTypeAll<UICustomPartsListItem>();
-        var pages = Resources.FindObjectsOfTypeAll<UIBazaarMaxPriceCustomLogPage>();
-        Plugin.Emit("PresetStockRowProbe", new
-        {
-            run = rowProbeRuns,
-            rowCount = rows.Length,
-            pageCount = pages.Length,
-            samples = rows.Take(3).Select(row => new
-            {
-                name = row.gameObject.name,
-                active = row.gameObject.activeInHierarchy,
-                parent = row.transform.parent?.name,
-                hasCategoryIcon = row.partsCategoryIcon != null,
-                hasPartsIcon = row.partsIcon != null,
-                hasName = row.partsName != null
-            }).ToArray()
-        });
-    }
-
-    private static void ProbeLoadStockRows()
+    private static void EnsureObjectPreviewTemplate()
     {
         var prefabs = UnityEngine.Object.FindObjectOfType<UIPrefabsManager>();
         if (prefabs == null)
         {
-            Plugin.Emit("PresetStockRowLoadUnavailable", new { reason = "UIPrefabsManager unavailable" });
+            Plugin.Warn("PresetStockRowLoadUnavailable", new { reason = "UIPrefabsManager unavailable" });
             return;
         }
 
         var key = UILoadKey.UIBazaarMaxPriceCustomLogPage;
-        var before = prefabs.UIPagePrefabCache(key);
-        Plugin.Emit("PresetStockRowLoadRequested", new
-        {
-            key = key.ToString(),
-            cachedBefore = before != null,
-            rowsBefore = before == null ? 0 : before.GetComponentsInChildren<UICustomPartsListItem>(true).Length
-        });
         rowLoadedCallback ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(
             (Action)(() => Plugin.Guard("preset-row-load-complete", OnStockRowsLoaded)));
         prefabs.Load(key, rowLoadedCallback);
     }
 
-    private static void OnStockRowsLoaded()
-    {
-        var prefabs = UnityEngine.Object.FindObjectOfType<UIPrefabsManager>();
-        var pagePrefab = prefabs?.UIPagePrefabCache(UILoadKey.UIBazaarMaxPriceCustomLogPage);
-        var rows = pagePrefab == null ? Array.Empty<UICustomPartsListItem>() :
-            pagePrefab.GetComponentsInChildren<UICustomPartsListItem>(true);
-        Plugin.Emit("PresetStockRowLoadCompleted", new
-        {
-            cachedAfter = pagePrefab != null,
-            prefabName = pagePrefab?.gameObject.name,
-            rowCount = rows.Length,
-            hasUsableRow = rows.Any(row => row.partsCategoryIcon != null &&
-                row.partsIcon != null && row.partsName != null),
-            sample = rows.Take(2).Select(row => new
-            {
-                row = row.gameObject.name,
-                parent = row.transform.parent?.name,
-                grandparent = row.transform.parent?.parent?.name,
-                rowPosition = row.GetComponent<RectTransform>()?.anchoredPosition.ToString(),
-                rowSize = row.GetComponent<RectTransform>()?.rect.size.ToString(),
-                parentSize = row.transform.parent?.GetComponent<RectTransform>()?.rect.size.ToString()
-            }).ToArray()
-        });
-        previewAttempted = false;
-    }
+    private static void OnStockRowsLoaded() => previewAttempted = false;
 
     internal static void Tick()
     {
-        ProbeSaveOverwriteCancelChoice();
-        ProbeObjectEditExitChoices();
         if (completionDialogOpen)
         {
             // MessageDialogSmall is opened through the game's asynchronous
@@ -229,7 +159,7 @@ internal static class PresetUiProbe
             else if (!completionDialogSeen && completionDialogFrames > 120)
             {
                 completionDialogOpen = false;
-                Plugin.Emit("PresetCompletionDialogUnavailable", new { pendingCompletion = pendingCompletion.ToString() });
+                Plugin.Warn("PresetCompletionDialogUnavailable", new { pendingCompletion = pendingCompletion.ToString() });
                 EndPresetUi();
             }
             return;
@@ -289,107 +219,6 @@ internal static class PresetUiProbe
         });
     }
 
-    private static void ProbeSaveOverwriteCancelChoice()
-    {
-        if (saveOverwriteCancelChoiceReported) return;
-        var dialog = Resources.FindObjectsOfTypeAll<UIDefaultDialog>()
-            .FirstOrDefault(item => item != null && item.gameObject.activeInHierarchy &&
-                IsSaveOverwritePrompt(item.infomationText?.text));
-        if (dialog == null) return;
-
-        var choices = dialog.GetComponentsInChildren<UIDialogChoiceBar>(true)
-            .Where(bar => bar != null && bar.gameObject.activeInHierarchy)
-            .Select((bar, index) => new
-            {
-                index,
-                textId = bar.cacheData?.TextId,
-                tableType = bar.cacheData?.TableType.ToString(),
-                key = bar.cacheData?.KeyId.ToString(),
-                text = bar.text?.text,
-                focused = bar.IsFocused
-            }).ToArray();
-        var yesChoice = choices.FirstOrDefault(choice => IsYesChoice(choice.text));
-        var cancelChoice = choices.FirstOrDefault(choice => IsCancelChoice(choice.text));
-        if (yesChoice == null || cancelChoice == null) return;
-
-        saveOverwriteCancelChoiceReported = true;
-        Plugin.Emit("StockSaveOverwriteChoices", new
-        {
-            dialog = dialog.gameObject.name,
-            infoId = dialog.infoId,
-            prompt = dialog.infomationText?.text,
-            yes = yesChoice,
-            cancel = cancelChoice,
-            choices
-        });
-    }
-
-    private static bool IsSaveOverwritePrompt(string text) =>
-        !string.IsNullOrEmpty(text) &&
-        (text.Contains("上書き") || text.Contains("overwrite", StringComparison.OrdinalIgnoreCase));
-
-    private static bool IsCancelChoice(string text) =>
-        !string.IsNullOrEmpty(text) &&
-        (text.Contains("やめる") || text.Contains("cancel", StringComparison.OrdinalIgnoreCase));
-
-    private static bool IsYesChoice(string text) =>
-        !string.IsNullOrEmpty(text) &&
-        (text.Contains("はい") || text.Equals("yes", StringComparison.OrdinalIgnoreCase));
-
-    private static void ProbeObjectEditExitChoices()
-    {
-        if (objectEditExitChoicesReported) return;
-
-        var dialogs = Resources.FindObjectsOfTypeAll<UIDefaultDialog>()
-            .Where(item => item != null && item.gameObject.activeInHierarchy);
-        foreach (var dialog in dialogs)
-        {
-            var choices = dialog.GetComponentsInChildren<UIDialogChoiceBar>(true)
-                .Where(bar => bar != null && bar.gameObject.activeInHierarchy)
-                .Select((bar, index) => new
-                {
-                    index,
-                    textId = bar.cacheData?.TextId,
-                    tableType = bar.cacheData?.TableType.ToString(),
-                    key = bar.cacheData?.KeyId.ToString(),
-                    text = bar.text?.text,
-                    focused = bar.IsFocused
-                }).ToArray();
-            if (choices.Length != 3) continue;
-
-            var texts = choices.Select(choice => choice.text).ToArray();
-            if (!texts.Any(IsApplyAndReturnChoice) ||
-                !texts.Any(IsDiscardAndReturnChoice) ||
-                !texts.Any(IsCancelChoice)) continue;
-
-            objectEditExitChoicesReported = true;
-            Plugin.Emit("ObjectEditExitChoiceTextIdProbe", new
-            {
-                dialog = dialog.gameObject.name,
-                infoId = dialog.infoId,
-                prompt = dialog.infomationText?.text,
-                choices
-            });
-            return;
-        }
-    }
-
-    private static bool IsApplyAndReturnChoice(string text) =>
-        !string.IsNullOrEmpty(text) &&
-        ((text.Contains("反映") && !text.Contains("反映しない") && text.Contains("もどる")) ||
-         (text.Contains("apply", StringComparison.OrdinalIgnoreCase) &&
-          (text.Contains("return", StringComparison.OrdinalIgnoreCase) ||
-           text.Contains("back", StringComparison.OrdinalIgnoreCase))));
-
-    private static bool IsDiscardAndReturnChoice(string text) =>
-        !string.IsNullOrEmpty(text) &&
-        ((text.Contains("反映しない") && text.Contains("もどる")) ||
-         ((text.Contains("without", StringComparison.OrdinalIgnoreCase) ||
-           text.Contains("discard", StringComparison.OrdinalIgnoreCase) ||
-           text.Contains("don't apply", StringComparison.OrdinalIgnoreCase)) &&
-          (text.Contains("return", StringComparison.OrdinalIgnoreCase) ||
-           text.Contains("back", StringComparison.OrdinalIgnoreCase))));
-
     private static void BuildObjectPreview(UIDialog dialog)
     {
         var prefabs = UnityEngine.Object.FindObjectOfType<UIPrefabsManager>();
@@ -397,7 +226,7 @@ internal static class PresetUiProbe
         var sourceRows = page?.GetComponentsInChildren<UICustomPartsListItem>(true);
         if (sourceRows == null || sourceRows.Length != 11)
         {
-            Plugin.Emit("PresetObjectPreviewUnavailable", new { reason = "stock rows unavailable", count = sourceRows?.Length ?? 0 });
+            Plugin.Warn("PresetObjectPreviewUnavailable", new { reason = "stock rows unavailable", count = sourceRows?.Length ?? 0 });
             return;
         }
 
@@ -435,12 +264,6 @@ internal static class PresetUiProbe
             .FirstOrDefault(bar => bar.gameObject.activeInHierarchy && bar.IsFocused);
         var focusedIndex = focused?.data?.id ?? 0;
         RefreshObjectPreview(savingSlot ? -1 : Math.Clamp(focusedIndex, 0, PresetStorage.UiSlotCount - 1));
-        Plugin.Emit("PresetObjectPreviewBuilt", new
-        {
-            dialogParent = targetParent.name,
-            dialogPosition = dialogRect.anchoredPosition.ToString(),
-            previewPosition = previewRect.anchoredPosition.ToString()
-        });
     }
 
     private static void RefreshObjectPreview(int uiSlot)
@@ -522,15 +345,6 @@ internal static class PresetUiProbe
                 rows[i].gameObject.SetActive(true);
             }
         }
-        Plugin.Emit("PresetObjectPreviewRefreshed", new
-        {
-            slot = uiSlot + 1,
-            shown,
-            emptyWithCategoryIcon,
-            rows = rows.Length,
-            orderSource = useOfficialOrder ? "record-page" : "category-enum",
-            officialOrder = orderNames
-        });
     }
 
     private static void RemoveObjectPreview(bool restoreDialogPosition = true)
@@ -590,20 +404,17 @@ internal static class PresetUiProbe
             SetHeaderMode(HeaderMode.None);
             reopenMenuAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)Open);
             CloseSlotDialog(manager, reopenMenuAfterDialog);
-            Plugin.Emit("PresetSlotPrototypeCancelled", new { });
             return true;
         }
         // The final argument is isMaskLeave.  It must be false so this dialog owns
         // and removes its translucent mask instead of leaving one behind.
         closePresetAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)EndPresetUi);
         manager.CloseDialog(null, closePresetAfterDialog, true, true, false);
-        Plugin.Emit("PresetDialogProbeCancelled", new { });
         return true;
     }
 
     private static void OnChoice(int index)
     {
-        Plugin.Emit("PresetDialogProbeChoice", new { index });
         if (index == 2)
         {
             CancelActiveMenu();
@@ -613,7 +424,7 @@ internal static class PresetUiProbe
         var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
         if (manager == null)
         {
-            Plugin.Emit("PresetDialogProbeFailed", new { reason = "UIManager unavailable while closing" });
+            Plugin.Warn("PresetDialogProbeFailed", new { reason = "UIManager unavailable while closing" });
             return;
         }
         savingSlot = index == 0;
@@ -637,7 +448,6 @@ internal static class PresetUiProbe
         var data = new UIDialogData(choices);
         manager.OpenDialog(UILoadKey.SelectDialog, data, DialogMaskType.Translucent,
             UIDialogManager.AnchorType.Center, false, true, null, null);
-        Plugin.Emit("PresetSlotPrototypeOpened", new { mode = savingSlot ? "save" : "load", slots = PresetStorage.UiSlotCount, hasCancel = true });
     }
 
     // Called from the same controllable-UI route as the stock Y/LShift action.
@@ -654,7 +464,6 @@ internal static class PresetUiProbe
         var preset = Prototype.UiSlotPreset(index);
         if (preset == null)
         {
-            Plugin.Emit("PresetUiDeleteSkipped", new { slot = index + 1, reason = "empty slot" });
             return true;
         }
 
@@ -667,7 +476,7 @@ internal static class PresetUiProbe
         if (manager == null)
         {
             RestoreClosedSlotDialogPosition();
-            Plugin.Emit("PresetUiDeleteUnavailable", new { slot = index + 1, reason = "UIManager unavailable" });
+            Plugin.Warn("PresetUiDeleteUnavailable", new { slot = index + 1, reason = "UIManager unavailable" });
             EndPresetUi();
             return true;
         }
@@ -686,7 +495,6 @@ internal static class PresetUiProbe
         if (IL2CPP.Il2CppObjectBaseToPtr(dialog) != IL2CPP.Il2CppObjectBaseToPtr(slotDialog))
             return false;
         if (Prototype.UiSlotPreset(index) != null) return false;
-        Plugin.Emit("PresetUiLoadSkipped", new { slot = index + 1, reason = "empty slot input consumed" });
         return true;
     }
 
@@ -698,7 +506,7 @@ internal static class PresetUiProbe
         var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
         if (manager == null || deleteTargetSlot < 0 || deleteTargetSlot >= PresetStorage.UiSlotCount)
         {
-            Plugin.Emit("PresetUiDeleteUnavailable", new { slot = deleteTargetSlot + 1, reason = "confirmation unavailable" });
+            Plugin.Warn("PresetUiDeleteUnavailable", new { slot = deleteTargetSlot + 1, reason = "confirmation unavailable" });
             EndPresetUi();
             return;
         }
@@ -711,13 +519,11 @@ internal static class PresetUiProbe
         var data = new UIDefaultDialogData(DeleteConfirmTextId, choices, new Il2CppStringArray(0L));
         manager.OpenDialog(UILoadKey.DefaultDialog, data, DialogMaskType.Translucent,
             UIDialogManager.AnchorType.Center, false, true, null, null);
-        Plugin.Emit("PresetUiDeleteConfirmationOpened", new { slot = deleteTargetSlot + 1, name = deleteTargetName });
     }
 
     private static void OnDeleteChoice(int index)
     {
         var slot = deleteTargetSlot;
-        var name = deleteTargetName;
         deleteConfirmOpen = false;
         deleteTargetSlot = -1;
         deleteTargetName = null;
@@ -725,7 +531,6 @@ internal static class PresetUiProbe
         {
             var deleted = false;
             Plugin.Guard("preset-ui-delete", () => deleted = Prototype.DeleteUiSlot(slot));
-            Plugin.Emit("PresetUiDeleteChoice", new { slot = slot + 1, name, index, deleted });
             if (deleted)
             {
                 pendingCompletion = CompletionMessage.Delete;
@@ -735,7 +540,6 @@ internal static class PresetUiProbe
         }
         else
         {
-            Plugin.Emit("PresetUiDeleteChoice", new { slot = slot + 1, name, index, deleted = false });
         }
 
         var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
@@ -768,7 +572,6 @@ internal static class PresetUiProbe
         {
             // Keep the official select dialog alive. Reopening it merely to
             // reject an empty load causes a distracting close/open animation.
-            Plugin.Emit("PresetUiLoadSkipped", new { slot = index + 1, reason = "empty slot" });
             return;
         }
         slotMenuOpen = false;
@@ -798,7 +601,6 @@ internal static class PresetUiProbe
     {
         if (!Prototype.LoadUiSlot(selectedSlot))
         {
-            Plugin.Emit("PresetUiLoadSkipped", new { slot = selectedSlot + 1, reason = "empty or unavailable" });
             EndPresetUi();
             return;
         }
@@ -811,7 +613,7 @@ internal static class PresetUiProbe
         var keyboard = UnityEngine.Object.FindObjectOfType<KeyboardManager>();
         if (keyboard == null)
         {
-            Plugin.Emit("PresetNameProbeFailed", new { reason = "KeyboardManager unavailable" });
+            Plugin.Warn("PresetNameProbeFailed", new { reason = "KeyboardManager unavailable" });
             EndPresetUi();
             return;
         }
@@ -821,12 +623,10 @@ internal static class PresetUiProbe
             (Action)OnNameInputCancelled);
         nameInputOpen = true;
         nameFooterRequested = false;
-        nameMasterReported = false;
         try
         {
             keyboard.ShowRequest(KeyboardManager.KeyboardType.BuyPetAnimal, string.Empty, inputCallback,
                 inputCancelled, false, true);
-            ReportNameMaster("after-show-request", keyboard.masterData);
         }
         catch
         {
@@ -834,12 +634,10 @@ internal static class PresetUiProbe
             EndPresetUi();
             throw;
         }
-        Plugin.Emit("PresetNameProbeOpened", new { keyboardType = "BuyPetAnimal" });
     }
 
     private static void OnNameInputCompleted(KeyboardManager.Result result, string input)
     {
-        Plugin.Emit("PresetNameProbeCompleted", new { result = result.ToString(), input, slot = selectedSlot + 1 });
         if (result == KeyboardManager.Result.Success)
         {
             nameInputOpen = false;
@@ -865,7 +663,6 @@ internal static class PresetUiProbe
         returnToSaveSlots = true;
         Plugin.Guard("preset-name-cancel-sound", () =>
             UnityEngine.Object.FindObjectOfType<UIAccessor>()?.PlaySe(UISoundTypes.Cancel));
-        Plugin.Emit("PresetNameProbeCancelled", new { });
     }
 
     private static void RefreshNameInputFooter()
@@ -880,13 +677,6 @@ internal static class PresetUiProbe
                     guide.button == GuideKey.East)) continue;
             nameFooterRequested = true;
             footer.SetGuide((KeyButtonGuideMasterId)(uint)footer.LastGuideId);
-            Plugin.Emit("PresetNameFooterRefreshed", new
-            {
-                guideId = footer.LastGuideId,
-                footer = footer.gameObject.name,
-                activeGuides = footer.guideTarget.GetComponentsInChildren<UIButtonGuide>(true)
-                    .Count(guide => guide != null && guide.gameObject.activeInHierarchy)
-            });
             return;
         }
     }
@@ -908,7 +698,7 @@ internal static class PresetUiProbe
         var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
         if (manager == null)
         {
-            Plugin.Emit("PresetCompletionDialogUnavailable", new { reason = "UIManager unavailable", completion = completion.ToString() });
+            Plugin.Warn("PresetCompletionDialogUnavailable", new { reason = "UIManager unavailable", completion = completion.ToString() });
             EndPresetUi();
             return;
         }
@@ -932,27 +722,21 @@ internal static class PresetUiProbe
             var data = new UIDefaultDialogData(textId, choices, new Il2CppStringArray(0L));
             manager.OpenDialog(UILoadKey.MessageDialogSmall, data, DialogMaskType.Translucent,
                 UIDialogManager.AnchorType.Center, false, true, null, null);
-            Plugin.Emit("PresetCompletionDialogOpened", new { completion = completion.ToString(), textId });
         }
         catch (Exception ex)
         {
             completionDialogOpen = false;
-            Plugin.Emit("PresetCompletionDialogUnavailable", new { completion = completion.ToString(), error = ex.Message });
+            Plugin.Warn("PresetCompletionDialogUnavailable", new { completion = completion.ToString(), error = ex.Message });
             EndPresetUi();
         }
     }
 
     private static void OnCompletionChoice(int index)
     {
-        Plugin.Emit("PresetCompletionDialogChoice", new
-        {
-            completion = activeCompletion.ToString(),
-            index
-        });
         var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
         if (manager == null)
         {
-            Plugin.Emit("PresetCompletionDialogCloseUnavailable", new { reason = "UIManager unavailable" });
+            Plugin.Warn("PresetCompletionDialogCloseUnavailable", new { reason = "UIManager unavailable" });
             return;
         }
 
@@ -994,7 +778,7 @@ internal static class PresetUiProbe
             if (!completionTextReported)
             {
                 completionTextReported = true;
-                Plugin.Emit("PresetCompletionDialogTextUnavailable", new
+                Plugin.Warn("PresetCompletionDialogTextUnavailable", new
                 {
                     dialog = completionDialog.gameObject.name
                 });
@@ -1009,12 +793,6 @@ internal static class PresetUiProbe
         if (!completionTextReported)
         {
             completionTextReported = true;
-            Plugin.Emit("PresetCompletionDialogTextApplied", new
-            {
-                completion = activeCompletion.ToString(),
-                body = body.gameObject.name,
-                text
-            });
         }
     }
 
@@ -1033,7 +811,6 @@ internal static class PresetUiProbe
         SetHeaderMode(HeaderMode.None);
         presetUiOpen = false;
         NativeDecorUi.RefreshFooterForPresetState();
-        Plugin.Emit("PresetFooterStateRestored", new { });
     }
 
     private static void SetHeaderMode(HeaderMode value)
@@ -1041,7 +818,6 @@ internal static class PresetUiProbe
         if (headerMode == value) return;
         headerMode = value;
         NativeDecorUi.RefreshModeTitleForPresetState();
-        Plugin.Emit("PresetHeaderModeChanged", new { mode = value.ToString() });
     }
 
     internal static bool IsNameInputOpen => nameInputOpen;
@@ -1056,9 +832,6 @@ internal static class PresetUiProbe
         return activeCallback != null &&
             IL2CPP.Il2CppObjectBaseToPtr(activeCallback) == IL2CPP.Il2CppObjectBaseToPtr(inputCallback);
     }
-
-    internal static bool IsOpeningOwnNameInput(KeyboardManager keyboard) =>
-        nameInputOpen && keyboard != null && keyboard.keyboardType == KeyboardManager.KeyboardType.BuyPetAnimal;
 
     internal static bool TryGetNameText(uint textId, out string text)
     {
@@ -1096,45 +869,6 @@ internal static class PresetUiProbe
         return false;
     }
 
-    internal static void ReportNameMaster(string stage, KeyboardMasterDataBase master)
-    {
-        if (!nameInputOpen || nameMasterReported || master == null) return;
-        nameMasterReported = true;
-        try
-        {
-            var steam = master.ToKeyboardSteamMasterData;
-            Plugin.Emit("PresetNameMasterProbe", new
-            {
-                stage,
-                masterType = master.GetIl2CppType().FullName,
-                inputDialogId = steam == null ? (uint?)null : steam.InputDialogId,
-                master.ConfirmDialogId,
-                master.TextMinLength,
-                master.TextMaxLength,
-                master.IsCancelButtonDisabled
-            });
-        }
-        catch (Exception ex)
-        {
-            Plugin.Emit("PresetNameMasterProbeFailed", new { stage, error = ex.Message });
-        }
-    }
-}
-
-[HarmonyPatch(typeof(KeyboardManager), nameof(KeyboardManager.GetMasterData))]
-internal static class PresetNameMasterProbe
-{
-    static void Postfix(KeyboardManager __instance, ref KeyboardMasterDataBase __result)
-    {
-        try
-        {
-            if (PresetUiProbe.IsOpeningOwnNameInput(__instance))
-                PresetUiProbe.ReportNameMaster("get-master-data", __result);
-            if (PresetUiProbe.IsOwnNameInput(__instance))
-                PresetUiProbe.ReportNameMaster("get-master-data", __result);
-        }
-        catch (Exception ex) { Plugin.Emit("PresetNameMasterProbeFailed", new { error = ex.Message }); }
-    }
 }
 
 // Override the computed cancel flag only for our own keyboard request.  The

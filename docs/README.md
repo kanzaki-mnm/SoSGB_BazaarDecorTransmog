@@ -4,6 +4,8 @@ Bazaar Decor Transmogの調査記録、設計メモ、段階別の検証手順�
 
 ## 現行機能の設計
 
+- [リファクタリング設計案](REFACTORING-PLAN.md)
+- [第2段階: 調査コードの削除](REFACTORING-STEP2.md)
 - [プリセットUI設計](PRESET-UI-DESIGN.md)
 - [みため編集モード](MODE-0.9.md)
 - [公式UI統合](NATIVE-UI-0.4.md)

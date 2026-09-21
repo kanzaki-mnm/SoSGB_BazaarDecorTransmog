@@ -12,7 +12,6 @@ internal static class PanelControls
         var e = Event.current;
         if (!GUI.enabled || e.type != EventType.MouseDown || e.button != 0 || !area.Contains(e.mousePosition)) return false;
         e.Use();
-        Plugin.Emit("PanelClick", new { control = label });
         return true;
     }
 }

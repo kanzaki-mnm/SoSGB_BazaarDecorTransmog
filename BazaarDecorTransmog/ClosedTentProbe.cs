@@ -14,7 +14,6 @@ internal static class ClosedTentProbe
     private sealed class Entry
     {
         internal BazaarMyShopClosed.PartsObject Parts;
-        internal string LastState;
         internal string AppliedBinding;
         internal GameObject Source;
         internal GameObject Visual;
@@ -27,7 +26,6 @@ internal static class ClosedTentProbe
         {
             var root = Parts.m_PartsRoot;
             var model = Parts.m_PartsObject?.Item2;
-            ObserveState(root, model);
 
             // During the editor-to-field transition this root exists but is inactive. Its
             // prefab materials are not ready yet; instantiating a replacement here produces
@@ -55,13 +53,12 @@ internal static class ClosedTentProbe
             if (binding.IsHidden)
             {
                 if (Source != model || OriginalRenderers.Count == 0) MaskSource(model);
-                Plugin.Emit("ClosedTentHidden", new { source = model.name });
                 return;
             }
             if (Pending && Time.unscaledTime - RequestStarted > 20f)
             {
                 Restore("closed request timed out");
-                Plugin.Emit("ClosedTentRejected", new { reason = "target request timed out" });
+                Plugin.Warn("ClosedTentRejected", new { reason = "target request timed out" });
             }
             if (Visual != null || Pending) return;
             if (Time.unscaledTime - RequestStarted < 0.5f) return;
@@ -76,7 +73,7 @@ internal static class ClosedTentProbe
             if (visualId == 0 || target == null) return;
             if (!SlotRuntime.StaticVisualTree(model))
             {
-                Plugin.Emit("ClosedTentRejected", new { reason = "source hierarchy unsupported", actualId, visualId });
+                Plugin.Warn("ClosedTentRejected", new { reason = "source hierarchy unsupported", actualId, visualId });
                 RequestStarted = Time.unscaledTime + 20f;
                 return;
             }
@@ -87,8 +84,6 @@ internal static class ClosedTentProbe
             RequestStarted = Time.unscaledTime;
             int ticket = ++Generation;
             int sourceInstance = model.GetInstanceID();
-            Plugin.Emit("ClosedTentTransmogRequest", new { actualId, visualId, target.modelName,
-                source = model.name, active = root.gameObject.activeInHierarchy });
             BazaarMyShopClosed.RM.GetLoadCustomPartsModelData(target.modelName,
                 (Il2CppSystem.Action<bool, GameObject>)((ok, prefab) => Plugin.Guard("closed-tent-callback", () =>
                 {
@@ -102,7 +97,7 @@ internal static class ClosedTentProbe
                     if (!ok || prefab == null || !SlotRuntime.StaticVisualTree(prefab))
                     {
                         Restore("closed target load failed");
-                        Plugin.Emit("ClosedTentRejected", new { reason = "target load failed or hierarchy unsupported", actualId, visualId });
+                        Plugin.Warn("ClosedTentRejected", new { reason = "target load failed or hierarchy unsupported", actualId, visualId });
                         return;
                     }
                     Apply(current, prefab, bindingKey, actualId, visualId);
@@ -134,10 +129,11 @@ internal static class ClosedTentProbe
                 if (renderers == 0) throw new InvalidOperationException("Closed visual has no enabled renderer");
                 foreach (var original in OriginalRenderers) original.Renderer.enabled = false;
                 bool unchanged = ActualTentId(BazaarMyShopClosed.BM) == actualId;
-                Plugin.Emit("ClosedTentTransmogApplied", new { actualId, visualId, unchanged,
-                    source = model.name, visual = Visual.name, parent = model.transform.parent?.name,
-                    active = Visual.activeInHierarchy, renderers });
-                if (!unchanged) Restore("closed placement verification mismatch");
+                if (!unchanged)
+                {
+                    Plugin.Warn("ClosedTentVerificationMismatch", new { actualId });
+                    Restore("closed placement verification mismatch");
+                }
             }
             catch
             {
@@ -156,14 +152,12 @@ internal static class ClosedTentProbe
                 OriginalRenderers.Add((renderer, renderer.enabled));
                 renderer.enabled = false;
             }
-            Plugin.Emit("ClosedTentSourceMasked", new { source = model.name });
         }
 
         internal void Restore(string reason)
         {
             Generation++;
             Pending = false;
-            bool changed = Visual != null || OriginalRenderers.Count != 0;
             foreach (var original in OriginalRenderers)
                 if (original.Renderer != null) original.Renderer.enabled = original.Enabled;
             OriginalRenderers.Clear();
@@ -175,28 +169,8 @@ internal static class ClosedTentProbe
             Visual = null;
             Source = null;
             AppliedBinding = null;
-            if (changed) Plugin.Emit("ClosedTentTransmogRestored", new { reason });
         }
 
-        private void ObserveState(Transform root, GameObject model)
-        {
-            string key = (model == null ? "none" : model.GetInstanceID().ToString()) + ":" + root.gameObject.activeInHierarchy;
-            if (LastState == key) return;
-            LastState = key;
-            var nodes = new List<object>();
-            foreach (var node in root.GetComponentsInChildren<Transform>(true))
-            {
-                if (nodes.Count >= 160) break;
-                var components = new List<string>();
-                foreach (var component in node.gameObject.GetComponents<Component>())
-                    components.Add(component == null ? "missing" : component.GetIl2CppType().FullName);
-                var filter = node.GetComponent<MeshFilter>();
-                nodes.Add(new { name = node.name, parent = node.parent?.name, active = node.gameObject.activeSelf,
-                    mesh = filter?.sharedMesh?.name, vertices = filter?.sharedMesh?.vertexCount ?? 0, components });
-            }
-            Plugin.Emit("ClosedTentState", new { model = model == null ? null : model.name,
-                root = root.name, parent = root.parent?.name, active = root.gameObject.activeInHierarchy, nodes });
-        }
     }
 
     private static readonly List<Entry> entries = new();
@@ -207,7 +181,6 @@ internal static class ClosedTentProbe
         RemoveDead();
         if (entries.Any(e => e.Parts.Pointer == __instance.Pointer) || entries.Count >= 32) return;
         entries.Add(new Entry { Parts = __instance });
-        Plugin.Emit("ClosedTentTracked", new { index = __instance.m_PartsIndex });
     });
 
     internal static void Tick()
