@@ -31,6 +31,8 @@ internal static class AppearanceEditorUi
     // officially equipped model. The transmog preview then replaces that stable source.
     private static bool allowStockFocus;
     private static bool footerRefreshRequested;
+    private static bool resumeStockFooterPending;
+    private static int stockEditorGuideId = -1;
     private static bool normalEditorDialogOpen;
     private static bool suppressAppearanceGuideUntilPageExit;
     private static int appearanceGuideResumeFrame = -1;
@@ -71,24 +73,52 @@ internal static class AppearanceEditorUi
         exitConfirmationOpen = false;
         exitPosePreserving = false;
         bool wasActive = Active;
-        Active = false;
-        RestoreChoiceLists();
         lastFocusData = null;
-        RestoreModeTitle();
-        RemoveAppearanceGuide();
-        if (wasActive)
+        Recovery.Run(() =>
         {
-            AppearanceSession.EndNativePreview();
-            AppearanceSession.EndAppearanceSession();
-        }
-        if (wasActive && page != null)
+            if (wasActive && PresetUiController.IsPresetUiOpen) PresetUiController.Abort();
+        }, () =>
         {
-            RestoreDetailChildren();
-            if (page.bazaarCustomDetail != null) page.bazaarCustomDetail.gameObject.SetActive(detailActive);
-            if (page.bazaarEffectDetail != null) page.bazaarEffectDetail.gameObject.SetActive(effectsActive);
-        }
-        if (wasTransitioning && FadeManager.IsInstance)
-            FadeManager.FadeIn(fadeSpeed: ModeTransitionFadeSpeed);
+            // If removing synthetic choices fails, retain the placement guard.
+            // Never let those choices fall through to the game's real edit path.
+            RestoreChoiceLists();
+            Active = false;
+            if (wasActive && !AppearanceSession.Enabled)
+            {
+                try { RefreshListDisplay(); }
+                catch { Active = true; throw; }
+            }
+        }, RestoreModeTitle, RemoveAppearanceGuide, () =>
+        {
+            if (wasActive)
+                AppearanceSession.EndNativePreview();
+        }, () =>
+        {
+            if (wasActive)
+                AppearanceSession.EndAppearanceSession();
+        }, () =>
+        {
+            if (wasActive && page != null)
+                RestoreDetailChildren();
+        }, () =>
+        {
+            if (wasActive && page != null)
+                if (page.bazaarCustomDetail != null) page.bazaarCustomDetail.gameObject.SetActive(detailActive);
+        }, () =>
+        {
+            if (wasActive && page != null)
+                if (page.bazaarEffectDetail != null) page.bazaarEffectDetail.gameObject.SetActive(effectsActive);
+        }, () =>
+        {
+            if (wasTransitioning && FadeManager.IsInstance)
+                FadeManager.FadeIn(fadeSpeed: ModeTransitionFadeSpeed);
+        });
+    }
+
+    internal static void Abort()
+    {
+        AppearanceSession.Stop();
+        Recovery.Run(PresetUiController.Abort, Exit, () => AppearanceSession.Restore("appearance UI failed"));
     }
 
     internal static bool CanToggle => Ready && AppearanceSession.Enabled && page != null && page.gameObject.activeInHierarchy;
@@ -120,7 +150,7 @@ internal static class AppearanceEditorUi
         if (manager == null) return;
         exitConfirmationOpen = true;
         exitChoiceCallback ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action<int>>(
-            (Action<int>)OnExitChoice);
+            (Action<int>)(index => Plugin.Guard("appearance-exit-choice", () => OnExitChoice(index), Abort)));
         var ids = new Il2CppSystem.Collections.Generic.List<uint>();
         ids.Add(StockApplyAndReturnChoiceTextId);
         ids.Add(StockDiscardAndReturnChoiceTextId);
@@ -134,6 +164,7 @@ internal static class AppearanceEditorUi
 
     private static void OnExitChoice(int index)
     {
+        if (!Active || !AppearanceSession.Enabled) return;
         exitConfirmationOpen = false;
         bool leave = false;
         if (index == 0)
@@ -155,13 +186,13 @@ internal static class AppearanceEditorUi
         if (leave)
         {
             leaveAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(
-                (Action)FinishAppearanceSessionAndLeave);
+                (Action)(() => Plugin.Guard("appearance-exit-after", FinishAppearanceSessionAndLeave, Abort)));
             manager.CloseDialog(null, leaveAfterDialog, true, true, false);
         }
         else
         {
             restorePoseAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(
-                (Action)RestoreExitPoseAndEndPreservation);
+                (Action)(() => Plugin.Guard("appearance-exit-pose", RestoreExitPoseAndEndPreservation, Abort)));
             manager.CloseDialog(null, restorePoseAfterDialog, true, true, false);
         }
     }
@@ -216,9 +247,12 @@ internal static class AppearanceEditorUi
     private static void CompleteModeTransitionAtBlack()
     {
         if (!modeTransitioning) return;
-        if (transitionEntering) EnterAppearance(); else LeaveAppearance();
-        if (FadeManager.IsInstance) FadeManager.FadeIn(afterCallback: transitionFinished, fadeSpeed: ModeTransitionFadeSpeed);
-        else CompleteModeTransition();
+        Plugin.Guard("appearance-transition", () =>
+        {
+            if (transitionEntering) EnterAppearance(); else LeaveAppearance();
+            if (FadeManager.IsInstance) FadeManager.FadeIn(afterCallback: transitionFinished, fadeSpeed: ModeTransitionFadeSpeed);
+            else CompleteModeTransition();
+        }, Abort);
     }
 
     private static void CompleteModeTransition() => modeTransitioning = false;
@@ -237,6 +271,7 @@ internal static class AppearanceEditorUi
             return;
         }
         RefreshFooterForDialogState();
+        ResumeStockFooterWhenReady();
         ApplyAppearanceGuide();
         if (Active)
         {
@@ -298,6 +333,12 @@ internal static class AppearanceEditorUi
         // The player may have hovered a different item in the normal editor, leaving
         // that item's model on screen even though it was never equipped.
         int actualFocusId = page.GetSetFocusId(page.selectTabCategory);
+        if (menuFooter == null)
+            menuFooter = page.transform.root.GetComponentInChildren<UIMenuFooter>(true);
+        // Dialogs replace LastGuideId. Capture the editor's guide before any
+        // appearance dialog opens rather than reusing the last dialog's guide.
+        stockEditorGuideId = menuFooter != null ? menuFooter.LastGuideId : -1;
+        resumeStockFooterPending = false;
         detailActive = page.bazaarCustomDetail != null && page.bazaarCustomDetail.gameObject.activeSelf;
         effectsActive = page.bazaarEffectDetail != null && page.bazaarEffectDetail.gameObject.activeSelf;
         detailIconActive = page.bazaarCustomDetail?.icon != null && page.bazaarCustomDetail.icon.gameObject.activeSelf;
@@ -321,8 +362,8 @@ internal static class AppearanceEditorUi
     internal static void LeaveAppearance()
     {
         if (!Active) return;
-        Active = false;
         RestoreChoiceLists();
+        Active = false;
         RestoreModeTitle();
         AppearanceSession.EndNativePreview();
         AppearanceSession.EndAppearanceSession();
@@ -331,13 +372,33 @@ internal static class AppearanceEditorUi
             RestoreDetailChildren();
             if (page.bazaarCustomDetail != null) page.bazaarCustomDetail.gameObject.SetActive(detailActive);
             if (page.bazaarEffectDetail != null) page.bazaarEffectDetail.gameObject.SetActive(effectsActive);
+            // Reused cells can keep the appearance focus frame after SetData.
+            // Clear it through the stock focus lifecycle before rebinding them.
+            if (page.partsScrollGroup != null)
+                foreach (var icon in page.partsScrollGroup.GetComponentsInChildren<UIBazaarCustomPartsIconContent>(true))
+                {
+                    icon.FocusOut();
+                    // This is persistent cursor availability, not selection.
+                    // Every pooled cell must remain usable after navigation.
+                    icon.SetCursorActive(true);
+                }
             RefreshListDisplay();
             RefreshCheckmarks();
             RestoreActualFocus();
             RestoreExitPose();
         }
         EndExitPosePreservation();
-        RefreshOfficialFooter();
+        resumeStockFooterPending = true;
+        // LeaveAppearance runs at full black. Restore the editor guide here so
+        // its normal show animation starts before the screen fades back in.
+        // Another modal must still retain ownership of the footer.
+        var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
+        if (manager != null && !manager.TryGetDialogMask(out _))
+        {
+            normalEditorDialogOpen = false;
+            appearanceGuideResumeFrame = -1;
+            ResumeStockFooterWhenReady(duringExitFade: true);
+        }
     }
 
     internal static void Select(BazaarCustomItemData data, BazaarCustomPageCategory category, bool commit)
@@ -852,7 +913,34 @@ internal static class AppearanceEditorUi
         if (page == null) return;
         int focusId = page.GetSetFocusId(page.selectTabCategory);
         if (focusId < 0) return;
-        page.partsScrollGroup?.SetFocus(focusId);
+        page.partsScrollGroup?.SetFocus(focusId, false);
+        page.partsScrollGroup?.UpdateFocus();
+        // A landed exit intentionally suppresses OnFocusIn to avoid lifting or
+        // reloading the model. Restore the description separately using the
+        // official data API; showing its children alone leaves our flavor text.
+        if (page.cacheCustomPartsListDic != null &&
+            page.cacheCustomPartsListDic.TryGetValue(page.selectTabCategory, out var items) &&
+            items != null && focusId < items.Count && items[focusId] != null)
+        {
+            page.bazaarCustomDetail?.SetData(items[focusId]);
+            RestoreDetailChildren();
+            // Keep every pooled cell's cursor anchor enabled. Disabling all but
+            // the selected cell prevents the cursor appearing after navigation.
+            // SetCursor relocates the stock cursor; use data identity because
+            // removal of our synthetic rows changes the cell indexes.
+            UIBazaarCustomPartsIconContent focusedIcon = null;
+            if (page.partsScrollGroup != null)
+                foreach (var icon in page.partsScrollGroup.GetComponentsInChildren<UIBazaarCustomPartsIconContent>(true))
+                {
+                    icon.SetCursorActive(true);
+                    if (icon.gameObject.activeInHierarchy && SameData(icon.cacheData, items[focusId]))
+                        focusedIcon = icon;
+                }
+            if (focusedIcon != null)
+            {
+                focusedIcon.SetCursor();
+            }
+        }
     }
 
     private static bool FocusAppliedAppearance(BazaarCustomPageCategory category)
@@ -1024,6 +1112,31 @@ internal static class AppearanceEditorUi
         }
     }
 
+    private static void ResumeStockFooterWhenReady(bool duringExitFade = false)
+    {
+        if (!resumeStockFooterPending || Active || (modeTransitioning && !duringExitFade) || !CanToggle || !ShouldInjectGuide) return;
+        if (menuFooter == null)
+            menuFooter = page.transform.root.GetComponentInChildren<UIMenuFooter>(true);
+        if (menuFooter == null || !menuFooter.gameObject.activeInHierarchy) return;
+        // Footer refresh is cosmetic. Fail once and keep the appearance editor
+        // usable rather than propagating this error to the session abort path.
+        resumeStockFooterPending = false;
+        Plugin.Guard("appearance-footer-resume", () =>
+        {
+            if (stockEditorGuideId < 0)
+            {
+                Plugin.Warn("AppearanceFooterResumeUnavailable", new { guideId = menuFooter.LastGuideId,
+                    reason = "editor guide was not captured" });
+                return;
+            }
+            // Let SetGuide own its normal animation and preset lookup. Rebuilding
+            // LastGuideId only regenerates the modal's B/A footer after an exit.
+            menuFooter.SetGuide((KeyButtonGuideMasterId)(uint)stockEditorGuideId);
+            appearanceGuide = null;
+            footerRefreshRequested = true;
+        });
+    }
+
     private static void RefreshOfficialFooter()
     {
         if (page == null) return;
@@ -1043,6 +1156,8 @@ internal static class AppearanceEditorUi
         }
         menuFooter = null;
         footerRefreshRequested = false;
+        resumeStockFooterPending = false;
+        stockEditorGuideId = -1;
         guideSearchReported = false;
         normalEditorDialogOpen = false;
         appearanceGuideResumeFrame = -1;

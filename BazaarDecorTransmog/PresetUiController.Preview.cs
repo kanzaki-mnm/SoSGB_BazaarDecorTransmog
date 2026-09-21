@@ -169,16 +169,21 @@ internal static partial class PresetUiController
 
     private static void RemoveObjectPreview(bool restoreDialogPosition = true)
     {
-        if (restoreDialogPosition && shiftedDialog != null)
-            shiftedDialog.anchoredPosition = originalDialogPosition;
-        else if (!restoreDialogPosition && shiftedDialog != null)
+        Recovery.Run(() =>
         {
-            closingShiftedDialog = shiftedDialog;
-            closingDialogOriginalPosition = originalDialogPosition;
-        }
-        shiftedDialog = null;
-        if (objectPreview != null) UnityEngine.Object.Destroy(objectPreview);
-        objectPreview = null;
+            if (restoreDialogPosition && shiftedDialog != null)
+                shiftedDialog.anchoredPosition = originalDialogPosition;
+            else if (!restoreDialogPosition && shiftedDialog != null)
+            {
+                closingShiftedDialog = shiftedDialog;
+                closingDialogOriginalPosition = originalDialogPosition;
+            }
+            shiftedDialog = null;
+        }, () =>
+        {
+            if (objectPreview != null) UnityEngine.Object.Destroy(objectPreview);
+            objectPreview = null;
+        });
         previewRows = null;
         previewSlot = -1;
         previewAttempted = false;

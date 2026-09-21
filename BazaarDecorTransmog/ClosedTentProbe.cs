@@ -101,7 +101,7 @@ internal static class ClosedTentProbe
                         return;
                     }
                     Apply(current, prefab, bindingKey, actualId, visualId);
-                })), CacheLevel.Permanent);
+                }, () => Restore("closed tent callback failed"))), CacheLevel.Permanent);
         }
 
         private void Apply(GameObject model, GameObject prefab, string bindingKey, uint actualId, uint visualId)
@@ -158,15 +158,18 @@ internal static class ClosedTentProbe
         {
             Generation++;
             Pending = false;
-            foreach (var original in OriginalRenderers)
-                if (original.Renderer != null) original.Renderer.enabled = original.Enabled;
-            OriginalRenderers.Clear();
-            if (Visual != null)
+            Recovery.Run(() => Recovery.Run(OriginalRenderers.ToArray().Select(original => (Action)(() =>
             {
-                Visual.SetActive(false);
-                UObject.Destroy(Visual);
-            }
-            Visual = null;
+                if (original.Renderer != null) original.Renderer.enabled = original.Enabled;
+                OriginalRenderers.Remove(original);
+            }))), () =>
+            {
+                if (Visual != null) Visual.SetActive(false);
+            }, () =>
+            {
+                if (Visual != null) UObject.Destroy(Visual);
+                Visual = null;
+            });
             Source = null;
             AppliedBinding = null;
         }
@@ -186,7 +189,7 @@ internal static class ClosedTentProbe
     internal static void Tick()
     {
         RemoveDead();
-        foreach (var entry in entries) entry.Tick();
+        foreach (var entry in entries) Plugin.Guard("closed-tent-entry", entry.Tick, () => entry.Restore("closed tent update failed"));
     }
 
     internal static void OnModelLoaded(BazaarMyShopClosed.PartsObject parts)
@@ -194,12 +197,12 @@ internal static class ClosedTentProbe
         if (parts == null || parts.m_PartsCategory != Category.Tent) return;
         RemoveDead();
         var entry = entries.FirstOrDefault(e => e.Parts.Pointer == parts.Pointer);
-        entry?.Tick();
+        if (entry != null) Plugin.Guard("closed-tent-ready", entry.Tick, () => entry.Restore("closed tent update failed"));
     }
 
     internal static void RestoreAll(string reason)
     {
-        foreach (var entry in entries) entry.Restore(reason);
+        Recovery.Run(entries.Select(entry => (Action)(() => entry.Restore(reason))));
     }
 
     private static void RemoveDead()

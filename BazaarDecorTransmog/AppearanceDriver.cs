@@ -11,17 +11,17 @@ public sealed class PrototypeDriver : MonoBehaviour
     public PrototypeDriver(IntPtr pointer) : base(pointer) { }
     public void Update()
     {
-        Plugin.Guard("transmog-update", AppearanceSession.Tick);
-        Plugin.Guard("preset-ui-update", PresetUiController.Tick);
+        Plugin.Guard("transmog-update", AppearanceSession.Tick, AppearanceEditorUi.Abort);
+        Plugin.Guard("preset-ui-update", PresetUiController.Tick, PresetUiController.Abort);
     }
     public void LateUpdate()
     {
         Plugin.Guard("transmog-decision-landing", AppearanceSession.UpdateDecisionDrops);
         // Reassert presentation after the game's Update, before rendering. This used
         // to run from the debug panel's OnGUI and must survive removal of that panel.
-        Plugin.Guard("appearance-presentation", AppearanceSession.RefreshEditorPresentation);
+        Plugin.Guard("appearance-presentation", AppearanceSession.RefreshEditorPresentation, AppearanceEditorUi.Abort);
     }
-    public void OnDestroy() => Plugin.Guard("transmog-cleanup", () => AppearanceSession.Restore("driver destroyed"));
+    public void OnDestroy() => Plugin.Guard("transmog-cleanup", AppearanceEditorUi.Abort);
 }
 
 [HarmonyPatch(typeof(BazaarMyShop), nameof(BazaarMyShop.LoadBazaarPartsModel))]

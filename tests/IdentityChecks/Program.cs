@@ -160,6 +160,7 @@ try
         new VisualSlot { Category = "Tent", Index = 0, Mode = "Actual" },
         new VisualSlot { Category = "Shelf", Index = 1, Mode = "Hidden" }
     }};
+    File.Delete(path); // A corrupt file is never silently overwritten by Save.
     PresetStorage.Save(path, new PresetFile { Presets = new() { displayModes } });
     var displayModesLoaded = PresetStorage.Load(path);
     Assert(displayModesLoaded.Presets[0].Slots[0].IsActual && displayModesLoaded.Presets[0].Slots[1].IsHidden,

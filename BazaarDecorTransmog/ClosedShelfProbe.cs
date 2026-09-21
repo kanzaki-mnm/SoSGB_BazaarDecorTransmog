@@ -110,7 +110,7 @@ internal static class ClosedShelfProbe
                             // never unmask a newer request's source.
                             if (ticket == Generation) UnmaskPendingSource();
                         }
-                    })), CacheLevel.Permanent);
+                    }, () => Restore("closed shelf callback failed"))), CacheLevel.Permanent);
             }
             catch { Restore("closed shelf request failed"); throw; }
         }
@@ -153,15 +153,19 @@ internal static class ClosedShelfProbe
         {
             Generation++;
             Pending = false;
-            UnmaskPendingSource();
-            if (Filter != null && OriginalMesh != null) Filter.sharedMesh = OriginalMesh;
-            if (Renderer != null && OriginalMaterials != null) Renderer.sharedMaterials = OriginalMaterials;
+            Recovery.Run(UnmaskPendingSource, () =>
+            {
+                if (Filter != null && OriginalMesh != null) Filter.sharedMesh = OriginalMesh;
+                Filter = null;
+                OriginalMesh = null;
+            }, () =>
+            {
+                if (Renderer != null && OriginalMaterials != null) Renderer.sharedMaterials = OriginalMaterials;
+                Renderer = null;
+                OriginalMaterials = null;
+            });
             Source = null;
             AppliedBinding = null;
-            Filter = null;
-            Renderer = null;
-            OriginalMesh = null;
-            OriginalMaterials = null;
         }
 
     }
@@ -182,7 +186,7 @@ internal static class ClosedShelfProbe
         if (Time.unscaledTime < next) return;
         next = Time.unscaledTime + 0.5f;
         RemoveDead();
-        foreach (var entry in entries) entry.Tick();
+        foreach (var entry in entries) Plugin.Guard("closed-shelf-entry", () => entry.Tick(), () => entry.Restore("closed shelf update failed"));
     }
 
     internal static void OnModelLoaded(BazaarMyShopClosed.PartsObject parts)
@@ -192,12 +196,12 @@ internal static class ClosedShelfProbe
         var entry = entries.FirstOrDefault(e => e.Parts.Pointer == parts.Pointer);
         // The stock instance now exists. Do not wait for the periodic check:
         // the next rendered frame would otherwise expose the original mesh.
-        entry?.Tick(immediate: true);
+        if (entry != null) Plugin.Guard("closed-shelf-ready", () => entry.Tick(immediate: true), () => entry.Restore("closed shelf update failed"));
     }
 
     internal static void RestoreAll(string reason)
     {
-        foreach (var entry in entries) entry.Restore(reason);
+        Recovery.Run(entries.Select(entry => (Action)(() => entry.Restore(reason))));
     }
 
     private static void RemoveDead()

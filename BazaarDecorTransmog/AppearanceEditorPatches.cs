@@ -206,9 +206,9 @@ internal static class NativeStockObjectExitChoiceGuideState
 internal static class NativePageShown
 {
     static void Prefix(UIBazaarCustomPage __instance) =>
-        Plugin.Guard("native-ui-page-prepare", () => AppearanceEditorUi.Observe(__instance));
+        Plugin.Guard("native-ui-page-prepare", () => AppearanceEditorUi.Observe(__instance), AppearanceEditorUi.Abort);
 
-    static void Postfix() => Plugin.Guard("native-ui-page-ready", AppearanceEditorUi.Sync);
+    static void Postfix() => Plugin.Guard("native-ui-page-ready", AppearanceEditorUi.Sync, AppearanceEditorUi.Abort);
 }
 
 [HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.OnFocusIn))]
@@ -222,7 +222,7 @@ internal static class NativeFocus
             AppearanceEditorUi.RememberFocus(data, category);
             return true;
         }
-        Plugin.Guard("native-ui-focus", () => AppearanceEditorUi.Select(data, category, false));
+        Plugin.Guard("native-ui-focus", () => AppearanceEditorUi.Select(data, category, false), AppearanceEditorUi.Abort);
         return false;
     }
 }
@@ -267,7 +267,7 @@ internal static class NativeDecide
     static bool Prefix(UIBazaarCustomPage __instance, BazaarCustomItemData data)
     {
         if (!AppearanceEditorUi.Active) return true;
-        Plugin.Guard("native-ui-decide", () => AppearanceEditorUi.Select(data, __instance.selectTabCategory, true));
+        Plugin.Guard("native-ui-decide", () => AppearanceEditorUi.Select(data, __instance.selectTabCategory, true), AppearanceEditorUi.Abort);
         return false;
     }
 }
@@ -283,7 +283,7 @@ internal static class NativeCancel
         // own dialog manager handle it instead of leaving the appearance editor.
         var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
         if (manager != null && manager.TryGetDialogMask(out _)) return true;
-        Plugin.Guard("native-ui-cancel", AppearanceEditorUi.LeaveAppearanceFromCancel);
+        Plugin.Guard("native-ui-cancel", AppearanceEditorUi.LeaveAppearanceFromCancel, AppearanceEditorUi.Abort);
         return false;
     }
 }
@@ -291,7 +291,7 @@ internal static class NativeCancel
 [HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.OnClose))]
 internal static class NativePageClosed
 {
-    static void Prefix() => Plugin.Guard("native-ui-close", AppearanceEditorUi.Exit);
+    static void Prefix() => Plugin.Guard("native-ui-close", AppearanceEditorUi.Exit, AppearanceEditorUi.Abort);
 }
 
 [HarmonyPatch(typeof(BazaarManager), nameof(BazaarManager.SetCustomParts))]
@@ -321,7 +321,7 @@ internal static class NativeAppearanceInput
         if (AppearanceEditorUi.IsModeTransitioning) return false;
         // West/X/F is the entry command only. Leaving the appearance mode is always
         // handled by the normal cancel command, so it reads as a child editor.
-        Plugin.Guard("native-ui-mode-enter", AppearanceEditorUi.EnterAppearanceFromWest);
+        Plugin.Guard("native-ui-mode-enter", AppearanceEditorUi.EnterAppearanceFromWest, AppearanceEditorUi.Abort);
         return false;
     }
 }
@@ -332,7 +332,7 @@ internal static class NativePresetStartProbe
     static bool Prefix()
     {
         if (!AppearanceEditorUi.Active) return true;
-        Plugin.Guard("preset-dialog-probe", PresetUiController.Open);
+        Plugin.Guard("preset-dialog-probe", PresetUiController.Open, PresetUiController.Abort);
         return false;
     }
 }

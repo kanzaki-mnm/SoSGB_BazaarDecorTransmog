@@ -9,5 +9,6 @@
     <Compile Include="../../BazaarDecorTransmog/VisualIdentity.cs" Link="VisualIdentity.cs" />
     <Compile Include="../../BazaarDecorTransmog/PresetModels.cs" Link="PresetModels.cs" />
     <Compile Include="../../BazaarDecorTransmog/PresetStorage.cs" Link="PresetStorage.cs" />
+    <Compile Include="../../BazaarDecorTransmog/Recovery.cs" Link="Recovery.cs" />
   </ItemGroup>
 </Project>

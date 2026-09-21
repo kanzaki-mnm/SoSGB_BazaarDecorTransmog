@@ -9,6 +9,12 @@ internal static class AppearanceSession
 {
     internal static bool Enabled { get; private set; } = true;
     internal static bool EditorPreview { get; private set; }
+    internal static void Stop()
+    {
+        Enabled = false;
+        AppearanceEditorUi.Ready = false;
+        // Keep runtime patches installed so an already open Mod dialog can close.
+    }
     private static readonly SlotAppearance[] slots = Enumerable.Range(0, 4).Select(i => new SlotAppearance(i))
         .Append(new SlotAppearance(0, BazaarCustomItemData.PartsCategory.Tent))
         .Concat(Enumerable.Range(0, 3).Select(i => new SlotAppearance(i, BazaarCustomItemData.PartsCategory.OrnamentL)))
@@ -27,7 +33,7 @@ internal static class AppearanceSession
         saved = new PresetFile { Presets = new() { new VisualPreset { Name = "Default" } } };
         try
         {
-            if (File.Exists(filePath)) saved = PresetStorage.Load(filePath);
+            if (File.Exists(filePath) || File.Exists(filePath + ".bak")) saved = PresetStorage.Load(filePath);
             else PresetStorage.Save(filePath, saved);
         }
         catch (Exception ex)
@@ -149,7 +155,7 @@ internal static class AppearanceSession
 
     internal static bool SaveCurrentAppearance()
     {
-        if (storageBlocked || saved == null || draft == null) return false;
+        if (!Enabled || storageBlocked || saved == null || draft == null) return false;
         var candidate = CopySavedFile();
         var current = draft.Copy();
         current.Name = "CurrentAppearance";
@@ -172,7 +178,10 @@ internal static class AppearanceSession
     {
         if (appearanceEntrySnapshot == null) return;
         LoadDraft(appearanceEntrySnapshot);
-        AppearanceEditorUi.RefreshAfterPresetLoad();
+        // Discard exits the editor; it is not a preset load that keeps editing.
+        // Rebuilding/focusing the appearance list while the exit dialog owns
+        // focus can leave its cursor behind. LeaveAppearance restores the stock
+        // list and focus once, under the transition fade.
     }
 
     internal static void EndAppearanceSession() => appearanceEntrySnapshot = null;
@@ -193,13 +202,15 @@ internal static class AppearanceSession
         // unloaded material (the magenta model flash) on the field transition. Restore
         // now invalidates outstanding loads; Tick reapplies cleanly once field roots are
         // active again.
-        foreach (var slot in slots)
+        try
         {
-            slot.SetFocused(false);
-            slot.Restore("native appearance preview ended");
-            slot.ResetPreviewAttempt();
+            Recovery.Run(slots.Select(slot => (Action)(() =>
+        {
+            Recovery.Run(() => slot.SetFocused(false),
+                () => slot.Restore("native appearance preview ended"), slot.ResetPreviewAttempt);
+        })));
         }
-        EditorPreview = false;
+        finally { EditorPreview = false; }
         // Bindings have not changed. Do not call Rebind here: it would also tear down the
         // closed-shop tent while that root is inactive, then recreate it before its field
         // materials have been initialized.
@@ -246,14 +257,14 @@ internal static class AppearanceSession
     internal static void Suspend()
     {
         EditorPreview = false;
-        foreach (var slot in slots) slot.Suspend();
+        Recovery.Run(slots.Select(slot => (Action)slot.Suspend));
     }
 
     internal static void Restore(string reason)
     {
-        foreach (var slot in slots) slot.Restore(reason);
-        ClosedTentProbe.RestoreAll(reason);
-        ClosedShelfProbe.RestoreAll(reason);
+        Recovery.Run(slots.Select(slot => (Action)(() => slot.Restore(reason)))
+            .Append(() => ClosedTentProbe.RestoreAll(reason))
+            .Append(() => ClosedShelfProbe.RestoreAll(reason)));
     }
 
     internal static void NativeModeChoice(BazaarCustomItemData.PartsCategory category, int index, string mode, bool commit)
@@ -288,7 +299,7 @@ internal static class AppearanceSession
         if (shop?.BM == null || shop.BM.IsCustomMode || !Enabled) return;
         foreach (var slot in slots)
             Plugin.Guard("field-model-ready:" + slot.PartCategory + ":" + slot.Index,
-                () => slot.Tick(immediate: true));
+                () => slot.Tick(immediate: true), () => slot.Restore("field update failed"));
     }
 
     internal static void ActualPlacementChanged(BazaarCustomItemData.PartsCategory category, int index)
@@ -315,11 +326,11 @@ internal static class AppearanceSession
             wasEditing = editing;
             if (editing) AppearanceEditorUi.Sync();
         }
-        if (editing) Plugin.Guard("native-ui-sync", AppearanceEditorUi.Sync);
+        if (editing) Plugin.Guard("native-ui-sync", AppearanceEditorUi.Sync, AppearanceEditorUi.Abort);
         for (int i = 0; i < slots.Length; i++)
         {
             int index = i;
-            Plugin.Guard("slot-tick:" + i, () => slots[index].Tick());
+            Plugin.Guard("slot-tick:" + i, () => slots[index].Tick(), () => slots[index].Restore("slot update failed"));
         }
     }
 
@@ -360,7 +371,7 @@ internal static class AppearanceSession
 
     internal static bool LoadUiSlot(int index)
     {
-        if (storageBlocked || draft == null) return false;
+        if (!Enabled || storageBlocked || draft == null) return false;
         var preset = UiSlotPreset(index);
         if (preset == null) return false;
         var previous = draft.Copy();
@@ -374,7 +385,11 @@ internal static class AppearanceSession
         catch (Exception ex)
         {
             try { LoadDraft(previous); AppearanceEditorUi.RefreshAfterPresetLoad(); }
-            catch (Exception rollbackError) { Plugin.Warn("PresetUiLoadRollbackError", new { error = rollbackError.Message }); }
+            catch (Exception rollbackError)
+            {
+                Plugin.Warn("PresetUiLoadRollbackError", new { error = rollbackError.Message });
+                Plugin.Guard("preset-load-emergency", AppearanceEditorUi.Abort);
+            }
             Plugin.Warn("PresetUiLoadError", new { slot = index + 1, error = ex.Message });
             return false;
         }
@@ -382,7 +397,7 @@ internal static class AppearanceSession
 
     internal static bool SaveUiSlot(int index, string enteredName)
     {
-        if (storageBlocked || saved == null || draft == null || index < 0 || index >= PresetStorage.UiSlotCount)
+        if (!Enabled || storageBlocked || saved == null || draft == null || index < 0 || index >= PresetStorage.UiSlotCount)
         {
             Plugin.Warn("PresetUiSaveRejected", new { reason = "storage unavailable or invalid slot", slot = index + 1 });
             return false;
@@ -410,13 +425,15 @@ internal static class AppearanceSession
         catch (Exception ex)
         {
             Plugin.Warn("PresetUiSaveError", new { slot = index + 1, error = ex.Message });
+            if (ReferenceEquals(saved, candidate))
+                Plugin.Guard("preset-save-presentation-emergency", AppearanceEditorUi.Abort);
             return false;
         }
     }
 
     internal static bool DeleteUiSlot(int index)
     {
-        if (storageBlocked || saved == null || index < 0 || index >= PresetStorage.UiSlotCount)
+        if (!Enabled || storageBlocked || saved == null || index < 0 || index >= PresetStorage.UiSlotCount)
         {
             Plugin.Warn("PresetUiDeleteRejected", new { reason = "storage unavailable or invalid slot", slot = index + 1 });
             return false;

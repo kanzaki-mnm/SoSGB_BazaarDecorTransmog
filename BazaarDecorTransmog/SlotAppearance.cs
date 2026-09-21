@@ -324,7 +324,7 @@ internal sealed class SlotAppearance
                     if (!supported) { UnmaskSource(); Reject("Visual load failed or unsupported hierarchy"); return; }
                     try { Apply(model, prefab, shop.BM, actualId, resolved); }
                     catch { UnmaskSource(); Reject("Apply failed; see DiagnosticError"); throw; }
-                });
+                }, () => Restore("visual callback failed"));
                 if (ticket == generation && pending) { pending = false; UnmaskSource(); Reject("Callback failed; see DiagnosticError"); }
             }), CacheLevel.Permanent);
         }
@@ -347,9 +347,12 @@ internal sealed class SlotAppearance
 
     private void UnmaskSource()
     {
-        foreach (var (renderer, enabled) in maskedRenderers)
-            if (renderer != null) renderer.enabled = enabled;
-        maskedRenderers.Clear();
+        if (maskedRenderers.Count == 0) { maskedSource = null; return; }
+        Recovery.Run(maskedRenderers.ToArray().Select(original => (Action)(() =>
+        {
+            if (original.Renderer != null) original.Renderer.enabled = original.Enabled;
+            maskedRenderers.Remove(original);
+        })));
         maskedSource = null;
     }
 
@@ -588,10 +591,17 @@ internal sealed class SlotAppearance
         var values = new List<object>();
         foreach (SeriesCategory series in Enum.GetValues<SeriesCategory>().Where(s => s != SeriesCategory.Max && s != SeriesCategory.All && s != SeriesCategory.None))
             foreach (ExtraSeriesCategory extra in Enum.GetValues<ExtraSeriesCategory>().Where(e => e != ExtraSeriesCategory.All))
-                values.Add(new { series = series.ToString(), extra = extra.ToString(),
-                    buy = buff.GetBuyCountValue(series, extra), price = buff.GetPriceValue(series, extra),
-                    happy = buff.GetHappyEnergyValue(series, extra), freshness = buff.GetFreshnessUpValue(series, extra),
-                    quality = buff.GetQualityUpValue(series, extra), gauge = buff.GetBonusGaugeValue(series, extra) });
+                values.Add(new
+                {
+                    series = series.ToString(),
+                    extra = extra.ToString(),
+                    buy = buff.GetBuyCountValue(series, extra),
+                    price = buff.GetPriceValue(series, extra),
+                    happy = buff.GetHappyEnergyValue(series, extra),
+                    freshness = buff.GetFreshnessUpValue(series, extra),
+                    quality = buff.GetQualityUpValue(series, extra),
+                    gauge = buff.GetBonusGaugeValue(series, extra)
+                });
         var passives = new List<uint>();
         var active = buff.m_ActivePassiveParam;
         for (int i = 0; i < active.Count; i++) passives.Add(active[i].Id);
@@ -604,37 +614,57 @@ internal sealed class SlotAppearance
             for (int g = 0; g < editGroups.Count; g++)
                 for (int i = 0; i < editGroups[g].DataDic.Count; i++)
                     edit.Add(new { category = editGroups[g].Category.ToString(), index = i, id = editGroups[g].DataDic[i] });
-        return JsonSerializer.Serialize(new { slots, edit, passives, seriesIds, values,
-            rich = buff.GetAddPopRichManValue(), trend = buff.GetUpgradeTrendValue() });
+        return JsonSerializer.Serialize(new
+        {
+            slots,
+            edit,
+            passives,
+            seriesIds,
+            values,
+            rich = buff.GetAddPopRichManValue(),
+            trend = buff.GetUpgradeTrendValue()
+        });
     }
 
     internal void Restore(string reason)
     {
-        if (decisionSettleSource != null)
-        {
-            try { decisionSettleSource.localPosition = EditorPositionAtHeight(decisionSettleSource, 0f); }
-            catch (Exception) { }
-            decisionSettleSource = null;
-        }
-        RestoreFocusOffsetImmediate();
-        UnmaskSource();
+        // Invalidate callbacks before any Unity access which can throw.
         generation++;
         pending = false;
         decisionFeedbackPending = false;
         focusAfterVisualId = 0;
-        foreach (var original in originalRenderers)
+        Recovery.Run(() =>
+        {
+            if (decisionSettleSource != null)
+            {
+                decisionSettleSource.localPosition = EditorPositionAtHeight(decisionSettleSource, 0f);
+                decisionSettleSource = null;
+            }
+        }, RestoreFocusOffsetImmediate, UnmaskSource,
+        () => Recovery.Run(originalRenderers.ToArray().Select(original => (Action)(() =>
+        {
             if (original.Renderer != null) original.Renderer.enabled = original.Enabled;
-        originalRenderers.Clear();
-        if (shelfFilter != null && shelfMesh != null) shelfFilter.sharedMesh = shelfMesh;
-        if (shelfRenderer != null && shelfMaterials != null) shelfRenderer.sharedMaterials = shelfMaterials;
-        shelfFilter = null;
-        shelfRenderer = null;
-        shelfMesh = null;
-        shelfMaterials = null;
+            originalRenderers.Remove(original);
+        }))), () =>
+        {
+            if (shelfFilter != null && shelfMesh != null) shelfFilter.sharedMesh = shelfMesh;
+            shelfFilter = null;
+            shelfMesh = null;
+        }, () =>
+        {
+            if (shelfRenderer != null && shelfMaterials != null) shelfRenderer.sharedMaterials = shelfMaterials;
+            shelfRenderer = null;
+            shelfMaterials = null;
+        }, () =>
+        {
+            if (visualObject != null) visualObject.SetActive(false);
+        }, () =>
+        {
+            if (visualObject != null) UObject.Destroy(visualObject);
+            visualObject = null;
+        });
         applied = null;
         appliedVisualId = 0;
-        if (visualObject != null) { visualObject.SetActive(false); UObject.Destroy(visualObject); }
-        visualObject = null;
     }
 
     private Transform FocusTransform()
@@ -715,8 +745,11 @@ internal sealed class SlotAppearance
     private void RestoreFocusOffsetImmediate()
     {
         if (liftedTransform != null)
-            try { liftedTransform.localPosition = AppearanceSession.EditorPreview && liftedTransform == editorFocusSource
-                ? EditorPositionAtHeight(liftedTransform, 0f) : liftedBasePosition; }
+            try
+            {
+                liftedTransform.localPosition = AppearanceSession.EditorPreview && liftedTransform == editorFocusSource
+                ? EditorPositionAtHeight(liftedTransform, 0f) : liftedBasePosition;
+            }
             catch (Exception) { }
         liftedTransform = null;
         liftAnimating = false;

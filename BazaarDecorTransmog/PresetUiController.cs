@@ -58,6 +58,78 @@ internal static partial class PresetUiController
     private static Il2CppSystem.Action slotDialogClosedCallback;
     private static Il2CppSystem.Action slotDialogClosedAfter;
     private static HeaderMode headerMode;
+    private static int sessionGeneration;
+    private static bool failed;
+    private static bool failureClosePending;
+    private static Il2CppSystem.Action failureClosedCallback;
+
+    private static Il2CppSystem.Action SessionCallback(Action action)
+    {
+        int ticket = sessionGeneration;
+        return DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)(() =>
+        {
+            if (ticket == sessionGeneration && !failed)
+                Plugin.Guard("preset-callback", action, Abort);
+        }));
+    }
+
+    private static Il2CppSystem.Action<int> SessionCallback(Action<int> action)
+    {
+        int ticket = sessionGeneration;
+        return DelegateSupport.ConvertDelegate<Il2CppSystem.Action<int>>((Action<int>)(index =>
+        {
+            if (ticket == sessionGeneration && !failed)
+                Plugin.Guard("preset-choice", () => action(index), Abort);
+        }));
+    }
+
+    internal static bool OwnsCompletion(UIDefaultDialog dialog) => completionDialogOpen &&
+        dialog != null && dialog.infoId == (activeCompletion == CompletionMessage.Save ? PresetSaveCompletedTextId :
+            activeCompletion == CompletionMessage.Load ? PresetLoadCompletedTextId : DeleteCompletedTextId);
+
+    private static bool HasChoiceId(UIDialog dialog, uint id) =>
+        dialog.GetComponentsInChildren<UIDialogChoiceBar>(true).Any(bar =>
+            // data is the UIData wrapper; cacheData is the ChoiceData populated
+            // by the stock bar. Casting the wrapper never identifies our menu.
+            bar != null && bar.gameObject.activeInHierarchy && bar.cacheData?.TextId == id);
+
+    private static void CloseFailedDialog()
+    {
+        if (failureClosePending) return;
+        var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
+        if (manager == null || !manager.IsDialog) return;
+        // CloseDialog targets the current UI history entry. Check its key and
+        // our unique IDs, not merely the existence of a dialog elsewhere.
+        foreach (var dialog in Resources.FindObjectsOfTypeAll<UIDialog>())
+        {
+            if (dialog == null || !dialog.gameObject.activeInHierarchy || dialog.myKey != manager.CurrentUIKey) continue;
+            var message = dialog.TryCast<UIDefaultDialog>();
+            bool owned = message != null && (message.infoId == PresetSaveCompletedTextId ||
+                message.infoId == PresetLoadCompletedTextId || message.infoId == DeleteCompletedTextId ||
+                message.infoId == DeleteConfirmTextId ||
+                !AppearanceSession.Enabled && message.infoId == AppearanceExitConfirmTextId);
+            if (!owned && dialog.TryCast<UISelectDialog>() != null)
+                owned = HasChoiceId(dialog, PresetSaveTextId) || HasChoiceId(dialog, PresetEmptySlotTextId);
+            if (!owned) continue;
+            failureClosedCallback ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(
+                (Action)(() => failureClosePending = false));
+            failureClosePending = true;
+            try { manager.CloseDialog(null, failureClosedCallback, true, false, false); }
+            catch { failureClosePending = false; throw; }
+            return;
+        }
+    }
+
+    internal static void Abort()
+    {
+        failed = true;
+        sessionGeneration++;
+        Recovery.Run(() =>
+        {
+            var keyboard = UnityEngine.Object.FindObjectOfType<KeyboardManager>();
+            if (IsOwnNameInput(keyboard)) keyboard.SetResultCancel();
+        }, CloseFailedDialog, EndPresetUi);
+    }
 
     private enum CompletionMessage
     {
@@ -71,6 +143,7 @@ internal static partial class PresetUiController
 
     internal static void Open()
     {
+        if (failed || !AppearanceSession.Enabled) return;
         if (!rowLoadAttempted)
         {
             rowLoadAttempted = true;
@@ -86,7 +159,7 @@ internal static partial class PresetUiController
         SetHeaderMode(HeaderMode.None);
         presetUiOpen = true;
         AppearanceEditorUi.RefreshFooterForPresetState();
-        choiceCallback ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action<int>>((Action<int>)OnChoice);
+        choiceCallback ??= SessionCallback(OnChoice);
         var ids = new Il2CppSystem.Collections.Generic.List<uint>();
         ids.Add(PresetSaveTextId);
         ids.Add(PresetLoadTextId);
@@ -99,6 +172,7 @@ internal static partial class PresetUiController
 
     internal static void Tick()
     {
+        if (failed) { CloseFailedDialog(); return; }
         if (completionDialogOpen)
         {
             // MessageDialogSmall is opened through the game's asynchronous
@@ -106,7 +180,7 @@ internal static partial class PresetUiController
             // lookup while it is visible.  Find its live default-dialog
             // instance instead; this still operates only on the spawned UI.
             var completionDialog = Resources.FindObjectsOfTypeAll<UIDefaultDialog>()
-                .LastOrDefault(dialog => dialog != null && dialog.gameObject.activeInHierarchy);
+                .LastOrDefault(dialog => OwnsCompletion(dialog) && dialog.gameObject.activeInHierarchy);
             var completionVisible = completionDialog != null;
             completionDialogFrames++;
             if (completionVisible)
@@ -121,9 +195,11 @@ internal static partial class PresetUiController
             }
             else if (!completionDialogSeen && completionDialogFrames > 120)
             {
-                completionDialogOpen = false;
-                Plugin.Warn("PresetCompletionDialogUnavailable", new { pendingCompletion = pendingCompletion.ToString() });
-                EndPresetUi();
+                Plugin.Warn("PresetCompletionDialogUnavailable", new { completion = activeCompletion.ToString(), reason = "open timed out" });
+                // OpenDialog may still be queued. Normal teardown invalidates
+                // its callback but cannot cancel that request. Abort keeps Tick
+                // watching for our late dialog and closes it through UIManager.
+                Abort();
             }
             return;
         }
@@ -155,8 +231,7 @@ internal static partial class PresetUiController
             slotChoiceBars = null;
             slotDialog = Resources.FindObjectsOfTypeAll<UISelectDialog>()
                 .LastOrDefault(item => item != null && item.gameObject.activeInHierarchy &&
-                    item.GetComponentsInChildren<UIDialogChoiceBar>(true)
-                        .Count(bar => bar != null && bar.gameObject.activeInHierarchy) == PresetStorage.UiSlotCount + 1);
+                    HasChoiceId(item, PresetEmptySlotTextId));
         }
         var dialog = slotDialog;
         if (dialog == null) return;
@@ -206,7 +281,7 @@ internal static partial class PresetUiController
             return;
         }
         slotDialogClosedAfter = after;
-        slotDialogClosedCallback ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)OnSlotDialogClosed);
+        slotDialogClosedCallback ??= SessionCallback(OnSlotDialogClosed);
         manager.CloseDialog(null, slotDialogClosedCallback, true, true, false);
     }
 
@@ -229,13 +304,13 @@ internal static partial class PresetUiController
             // Keep the shifted position for this dialog's closing animation.
             RemoveObjectPreview(restoreDialogPosition: false);
             SetHeaderMode(HeaderMode.None);
-            reopenMenuAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)Open);
+            reopenMenuAfterDialog ??= SessionCallback(Open);
             CloseSlotDialog(manager, reopenMenuAfterDialog);
             return true;
         }
         // The final argument is isMaskLeave.  It must be false so this dialog owns
         // and removes its translucent mask instead of leaving one behind.
-        closePresetAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)EndPresetUi);
+        closePresetAfterDialog ??= SessionCallback(EndPresetUi);
         manager.CloseDialog(null, closePresetAfterDialog, true, true, false);
         return true;
     }
@@ -256,7 +331,7 @@ internal static partial class PresetUiController
         }
         savingSlot = index == 0;
         SetHeaderMode(savingSlot ? HeaderMode.Save : HeaderMode.Load);
-        openSlotsAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)OpenSlotMenu);
+        openSlotsAfterDialog ??= SessionCallback(OpenSlotMenu);
         manager.CloseDialog(null, openSlotsAfterDialog, true, true, false);
     }
 
@@ -268,7 +343,7 @@ internal static partial class PresetUiController
         slotDialog = null;
         slotChoiceBars = null;
         previewAttempted = false;
-        slotCallback ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action<int>>((Action<int>)OnSlotChoice);
+        slotCallback ??= SessionCallback(OnSlotChoice);
         var ids = new Il2CppSystem.Collections.Generic.List<uint>();
         for (var i = 0; i < PresetStorage.UiSlotCount; i++) ids.Add(PresetEmptySlotTextId + (uint)i);
         ids.Add(StockCancelChoiceTextId);
@@ -307,7 +382,7 @@ internal static partial class PresetUiController
             EndPresetUi();
             return true;
         }
-        openDeleteConfirmationAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)OpenDeleteConfirmation);
+        openDeleteConfirmationAfterDialog ??= SessionCallback(OpenDeleteConfirmation);
         CloseSlotDialog(manager, openDeleteConfirmationAfterDialog);
         return true;
     }
@@ -338,7 +413,7 @@ internal static partial class PresetUiController
             return;
         }
         deleteConfirmOpen = true;
-        deleteCallback ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action<int>>((Action<int>)OnDeleteChoice);
+        deleteCallback ??= SessionCallback(OnDeleteChoice);
         var ids = new Il2CppSystem.Collections.Generic.List<uint>();
         ids.Add(StockYesChoiceTextId);
         ids.Add(StockCancelChoiceTextId);
@@ -361,7 +436,7 @@ internal static partial class PresetUiController
             if (deleted)
             {
                 pendingCompletion = CompletionMessage.Delete;
-                reopenSlotsAfterCompletion ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)OpenSlotMenu);
+                reopenSlotsAfterCompletion ??= SessionCallback(OpenSlotMenu);
                 completionAfterClose = reopenSlotsAfterCompletion;
             }
         }
@@ -377,12 +452,12 @@ internal static partial class PresetUiController
         }
         if (pendingCompletion == CompletionMessage.Delete)
         {
-            openCompletionAfterDeleteDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)OpenCompletionDialog);
+            openCompletionAfterDeleteDialog ??= SessionCallback(OpenCompletionDialog);
             manager.CloseDialog(null, openCompletionAfterDeleteDialog, true, true, false);
         }
         else
         {
-            reopenSlotsAfterDeleteDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)OpenSlotMenu);
+            reopenSlotsAfterDeleteDialog ??= SessionCallback(OpenSlotMenu);
             manager.CloseDialog(null, reopenSlotsAfterDeleteDialog, true, true, false);
         }
     }
@@ -414,12 +489,12 @@ internal static partial class PresetUiController
         }
         if (savingSlot)
         {
-            openNameAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)OpenNameInput);
+            openNameAfterDialog ??= SessionCallback(OpenNameInput);
             CloseSlotDialog(manager, openNameAfterDialog);
         }
         else
         {
-            loadSlotAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)LoadSelectedSlot);
+            loadSlotAfterDialog ??= SessionCallback(LoadSelectedSlot);
             CloseSlotDialog(manager, loadSlotAfterDialog);
         }
     }
@@ -444,10 +519,14 @@ internal static partial class PresetUiController
             EndPresetUi();
             return;
         }
+        int ticket = sessionGeneration;
         inputCallback ??= DelegateSupport.ConvertDelegate<KeyboardManager.InputCompleteCallback>(
-            (Action<KeyboardManager.Result, string>)OnNameInputCompleted);
-        inputCancelled ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(
-            (Action)OnNameInputCancelled);
+            (Action<KeyboardManager.Result, string>)((result, text) =>
+            {
+                if (ticket == sessionGeneration && !failed)
+                    Plugin.Guard("preset-name-complete", () => OnNameInputCompleted(result, text), Abort);
+            }));
+        inputCancelled ??= SessionCallback(OnNameInputCancelled);
         nameInputOpen = true;
         nameFooterRequested = false;
         try
@@ -542,8 +621,7 @@ internal static partial class PresetUiController
             // MessageDialogSmall is backed by UIDefaultDialog and requires
             // UIDefaultDialogData. Even a notification with no visible choices
             // still needs a non-null ChoicesData contract for its input setup.
-            completionCallback ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action<int>>(
-                (Action<int>)OnCompletionChoice);
+            completionCallback ??= SessionCallback(OnCompletionChoice);
             var ids = new Il2CppSystem.Collections.Generic.List<uint>();
             var choices = new ChoicesData(ids, completionCallback, LocalizeTextTableType.DialogChoiceText);
             var data = new UIDefaultDialogData(textId, choices, new Il2CppStringArray(0L));
@@ -570,7 +648,7 @@ internal static partial class PresetUiController
         // A zero-choice UIDefaultDialog forwards B/Esc to this callback but
         // does not close itself. Close it once through the same UIManager path,
         // then either restore appearance mode or return to the delete slot list.
-        completionClosedAfter ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)OnCompletionClosed);
+        completionClosedAfter ??= SessionCallback(OnCompletionClosed);
         manager.CloseDialog(null, completionClosedAfter, true, true, false);
     }
 
@@ -625,6 +703,16 @@ internal static partial class PresetUiController
 
     private static void EndPresetUi()
     {
+        sessionGeneration++;
+        slotMenuOpen = nameInputOpen = finishPresetAfterName = returnToSaveSlots = nameFooterRequested = false;
+        selectedSlot = -1;
+        slotDialogClosedAfter = null;
+        choiceCallback = slotCallback = completionCallback = deleteCallback = null;
+        completionClosedAfter = openCompletionAfterDeleteDialog = reopenSlotsAfterCompletion = null;
+        openSlotsAfterDialog = reopenMenuAfterDialog = openNameAfterDialog = loadSlotAfterDialog = null;
+        closePresetAfterDialog = slotDialogClosedCallback = inputCancelled = null;
+        openDeleteConfirmationAfterDialog = reopenSlotsAfterDeleteDialog = null;
+        inputCallback = null;
         pendingCompletion = CompletionMessage.None;
         activeCompletion = CompletionMessage.None;
         completionAfterClose = null;
@@ -635,9 +723,9 @@ internal static partial class PresetUiController
         deleteConfirmOpen = false;
         deleteTargetSlot = -1;
         deleteTargetName = null;
-        SetHeaderMode(HeaderMode.None);
         presetUiOpen = false;
-        AppearanceEditorUi.RefreshFooterForPresetState();
+        Recovery.Run(() => RemoveObjectPreview(), RestoreClosedSlotDialogPosition,
+            () => SetHeaderMode(HeaderMode.None), AppearanceEditorUi.RefreshFooterForPresetState);
     }
 
     private static void SetHeaderMode(HeaderMode value)
@@ -712,12 +800,12 @@ internal static class PresetNameProbeCancel
 [HarmonyPatch(typeof(UIDefaultDialog), nameof(UIDefaultDialog.IsEnabledInputEast))]
 internal static class PresetCompletionDialogCancel
 {
-    static void Postfix(ref bool __result)
+    static void Postfix(UIDefaultDialog __instance, ref bool __result)
     {
         // Our direct message text has no DialogMaster record, so the stock
         // default-dialog check disables East/B.  Enable it only for our live
         // completion notice and let the game's own dialog path close it.
-        if (PresetUiController.IsCompletionDialogOpen) __result = true;
+        if (PresetUiController.OwnsCompletion(__instance)) __result = true;
     }
 }
 

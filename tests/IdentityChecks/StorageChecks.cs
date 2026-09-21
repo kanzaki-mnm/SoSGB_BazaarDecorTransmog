@@ -74,6 +74,10 @@ internal static class StorageChecks
             Check(recovered.CurrentAppearance.Slots[0].IsHidden && recovered.Presets.Count == 6 &&
                 File.ReadAllText(path) == damaged, "embedded previous state recovers invalid content without rewriting file");
             Check(events.Any(e => e.Contains("embedded-previous-state")), "embedded recovery is reported");
+            PresetStorage.Save(path, recovered);
+            Check(File.ReadAllText(path + ".bak") == backup &&
+                PresetStorage.Load(path).PreviousValidState.Presets.Count == 6,
+                "saving embedded recovery preserves good external backup and recovered snapshot");
 
             var healthy = State();
             healthy.PreviousValidState = new PresetSnapshot { Presets = new() };
@@ -82,13 +86,56 @@ internal static class StorageChecks
             File.WriteAllText(path, "{broken");
             Check(PresetStorage.Load(path).CurrentAppearance.Slots[0].IsHidden, "unparseable primary uses external backup");
             Check(events.Any(e => e.Contains("external-backup")), "external recovery is reported");
+            PresetStorage.Save(path, State());
+            Check(File.ReadAllText(path + ".bak") == backup, "saving external recovery never backs up corrupt primary");
+            File.WriteAllText(path, "{broken");
             File.WriteAllText(path + ".bak", "{also broken");
             Throws<InvalidDataException>(() => PresetStorage.Load(path), "both corrupt files fail visibly");
             Check(File.ReadAllText(path) == "{broken" && File.ReadAllText(path + ".bak") == "{also broken",
                 "failed recovery preserves evidence");
+            Throws<InvalidDataException>(() => PresetStorage.Save(path, State()), "unrecoverable existing data blocks save");
             File.Delete(path + ".bak");
             File.WriteAllText(path, JsonSerializer.Serialize(new PresetFile { SchemaVersion = 10, Presets = State().Presets }));
-            Throws<InvalidDataException>(() => PresetStorage.Load(path), "future schema without recovery data rejected on load");
+            Throws<NotSupportedException>(() => PresetStorage.Load(path), "future schema without recovery data rejected on load");
+            File.WriteAllText(path + ".bak", backup);
+            foreach (string future in new[] {
+                JsonSerializer.Serialize(new PresetFile { SchemaVersion = 10, Presets = State().Presets,
+                    PreviousValidState = new PresetSnapshot { Presets = State().Presets } }),
+                "{\"SchemaVersion\":10,\"Presets\":\"new-shape\"}" })
+            {
+                File.WriteAllText(path, future);
+                Throws<NotSupportedException>(() => PresetStorage.Load(path), "future data cannot recover older snapshot or backup");
+                Throws<NotSupportedException>(() => PresetStorage.Save(path, State()), "future target cannot be overwritten");
+                Check(File.ReadAllText(path) == future && File.ReadAllText(path + ".bak") == backup,
+                    "future data and backup remain byte-identical");
+            }
+            File.WriteAllText(path, valid);
+            string futureBackup = "{\"SchemaVersion\":10,\"Presets\":\"future\"}";
+            File.WriteAllText(path + ".bak", futureBackup);
+            Throws<NotSupportedException>(() => PresetStorage.Save(path, State()), "future backup cannot be rotated away");
+            Check(File.ReadAllText(path) == valid && File.ReadAllText(path + ".bak") == futureBackup,
+                "future backup refusal preserves both files");
+            File.WriteAllText(path + ".bak", backup);
+            var futureInput = State(); futureInput.SchemaVersion = 10;
+            Throws<InvalidDataException>(() => PresetStorage.Save(path, futureInput), "future input rejected before normalization");
+            Check(futureInput.SchemaVersion == 10 && File.ReadAllText(path) == valid, "failed save does not mutate input schema");
+            using (var lockedBackup = new FileStream(path + ".bak", FileMode.Open, FileAccess.Read, FileShare.Read))
+                Throws<IOException>(() => PresetStorage.Save(path, State()), "locked backup rejects atomic commit");
+            Check(File.ReadAllText(path) == valid && File.ReadAllText(path + ".bak") == backup,
+                "backup replacement failure preserves primary and backup");
+            var failedInput = State(); failedInput.SchemaVersion = 7;
+            // A real sharing violation exercises the commit failure, after staging succeeds.
+            using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                Throws<IOException>(() => PresetStorage.Save(path, failedInput), "locked primary rejects atomic commit");
+            Check(File.ReadAllText(path) == valid && File.ReadAllText(path + ".bak") == backup &&
+                failedInput.SchemaVersion == 7 && failedInput.PreviousValidState == null && !File.Exists(path + ".tmp"),
+                "commit failure preserves primary backup caller metadata and cleans staging");
+            File.Delete(path);
+            Check(PresetStorage.Load(path).Presets.Count == 6, "missing primary recovers backup");
+            PresetStorage.Save(path, State());
+            Check(File.ReadAllText(path + ".bak") == backup, "creating primary after recovery retains backup");
+            PresetStorage.Report = (_, _) => throw new Exception("logger unavailable");
+            Check(PresetStorage.Load(path).Presets.Count == 6, "diagnostic failure does not invalidate healthy data");
 
             for (int schema = 1; schema <= 9; schema++)
             {
@@ -112,6 +159,18 @@ internal static class StorageChecks
                 var badSlot = State(); badSlot.Presets[0].UiSlotIndex = index;
                 Throws<InvalidDataException>(() => PresetStorage.Validate(badSlot), $"UI slot {index} rejected");
             }
+            var restored = new List<int>();
+            AggregateException failures = null;
+            try
+            {
+                Recovery.Run(() => { restored.Add(1); throw new IOException("renderer lost"); },
+                    () => restored.Add(2),
+                    () => Recovery.Run(() => { restored.Add(3); throw new IOException("mesh lost"); },
+                        () => restored.Add(4)), () => restored.Add(5));
+            }
+            catch (AggregateException ex) { failures = ex; }
+            Check(restored.SequenceEqual(new[] { 1, 2, 3, 4, 5 }) && failures?.Flatten().InnerExceptions.Count == 2,
+                "independent and nested restoration continues after faults and reports both failures");
         }
         finally
         {
