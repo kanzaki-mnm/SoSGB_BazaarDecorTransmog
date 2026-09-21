@@ -13,22 +13,13 @@ internal static class Prototype
         .Append(new SlotRuntime(0, BazaarCustomItemData.PartsCategory.Tent))
         .Concat(Enumerable.Range(0, 3).Select(i => new SlotRuntime(i, BazaarCustomItemData.PartsCategory.OrnamentL)))
         .Concat(Enumerable.Range(0, 3).Select(i => new SlotRuntime(i, BazaarCustomItemData.PartsCategory.Shelf))).ToArray();
-    private static readonly string[] SmallSlotNames = { "0: Left outside", "1: Left inside", "2: Right outside", "3: Right inside" };
-    private static readonly string[] LargeSlotNames = { "0: Left", "1: Right outside", "2: Right inside" };
-    private static readonly string[] ShelfSlotNames = { "0: Left", "1: Center", "2: Right" };
     private static PresetFile saved;
     private static VisualPreset draft;
     private static VisualPreset appearanceEntrySnapshot;
     private static BazaarMyShop shop;
     private static int selectedSlot;
-    private static string filePath, nameText, message = "", search = "";
-    private static bool dirty, storageBlocked, wasEditing, collapsed = true;
-    private static readonly List<Choice> choices = new();
-    private sealed class Choice
-    {
-        internal uint Id;
-        internal string Name, Model, Category;
-    }
+    private static string filePath;
+    private static bool storageBlocked, wasEditing;
 
     internal static void Configure()
     {
@@ -44,7 +35,6 @@ internal static class Prototype
             // Never silently overwrite unreadable or newer-schema data.
             storageBlocked = true;
             saved = new PresetFile { Presets = new() { new VisualPreset { Name = "Recovery" } } };
-            message = "Preset file error: file preserved; saving blocked. See log.";
             Plugin.Warn("PresetFileError", new { filePath, error = ex.Message });
         }
         LoadDraft(saved.CurrentAppearance ??
@@ -53,10 +43,7 @@ internal static class Prototype
 
     private static void LoadDraft(VisualPreset value)
     {
-        PanelTextInput.Blur();
         draft = value.Copy();
-        nameText = value.Name;
-        dirty = false;
         Rebind();
     }
 
@@ -121,24 +108,6 @@ internal static class Prototype
         return binding == null || binding.IsActual || binding.IsHidden && !AllowsHidden(category);
     }
 
-    private static void SetDisplayMode(string mode)
-    {
-        var runtime = slots[selectedSlot];
-        if (mode == "Hidden" && !AllowsHidden(runtime.PartCategory))
-        {
-            message = "Shelves cannot be hidden because they remain gameplay surfaces.";
-            return;
-        }
-        draft.Slots.RemoveAll(s => Matches(s, selectedSlot));
-        if (mode != "Actual")
-            draft.Slots.Add(new VisualSlot { Index = runtime.Index, Category = runtime.PartCategory.ToString(), Mode = mode });
-        // An omitted entry is deliberately equivalent to Actual. It keeps old, all-vanilla
-        // presets compact while the explicit Hidden record persists the new choice.
-        dirty = true;
-        runtime.Bind(draft.Slots.FirstOrDefault(s => Matches(s, selectedSlot)));
-        message = mode == "Hidden" ? "Draft changed: this slot will be hidden." : "Draft changed: this slot uses its actual appearance.";
-    }
-
     private static void Rebind()
     {
         for (int i = 0; i < slots.Length; i++) slots[i].Bind(draft.Slots.FirstOrDefault(s => Matches(s, i)));
@@ -190,7 +159,6 @@ internal static class Prototype
         {
             PresetStorage.Save(filePath, candidate);
             saved = candidate;
-            dirty = false;
             return true;
         }
         catch (Exception ex)
@@ -216,12 +184,6 @@ internal static class Prototype
     {
         if (selectedSlot >= 0 && selectedSlot < slots.Length)
             slots[selectedSlot].SetEditorPoseImmediate(hovered);
-    }
-
-    internal static void SetEnabled(bool value)
-    {
-        Enabled = value;
-        Rebind();
     }
 
     internal static void EndNativePreview()
@@ -261,7 +223,6 @@ internal static class Prototype
         {
             draft.Slots.RemoveAll(s => Matches(s, selectedSlot));
             draft.Slots.Add(choice);
-            dirty = true;
         }
         EditorPreview = true;
         slots[selectedSlot].Bind(choice);
@@ -312,7 +273,6 @@ internal static class Prototype
             draft.Slots.RemoveAll(s => Matches(s, selectedSlot));
             if (mode == "Hidden")
                 draft.Slots.Add(new VisualSlot { Index = index, Category = category.ToString(), Mode = mode });
-            dirty = true;
         }
         EditorPreview = true;
         slots[selectedSlot].Bind(mode == "Actual" ? null :
@@ -356,22 +316,6 @@ internal static class Prototype
             if (editing) NativeDecorUi.Sync();
         }
         if (editing) Plugin.Guard("native-ui-sync", NativeDecorUi.Sync);
-        if (choices.Count == 0 && shop != null)
-        {
-            var mdm = BokuMono.API.Bazaar.MDM;
-            var rows = mdm?.CustomPartsMaster?.list;
-            if (rows != null && mdm.ItemMaster != null)
-                for (int i = 0; i < rows.Count; i++)
-                {
-                    var row = rows[i];
-                    if ((row.Category != BazaarCustomItemData.PartsCategory.OrnamentS &&
-                         row.Category != BazaarCustomItemData.PartsCategory.Tent &&
-                         row.Category != BazaarCustomItemData.PartsCategory.OrnamentL &&
-                         row.Category != BazaarCustomItemData.PartsCategory.Shelf)) continue;
-                    string name = mdm.ItemMaster.TryGetData(row.Id, out var item) && item != null ? item.ItemName : row.Id.ToString();
-                    choices.Add(new Choice { Id = row.Id, Name = name, Model = row.modelName, Category = row.Category.ToString() });
-                }
-        }
         for (int i = 0; i < slots.Length; i++)
         {
             int index = i;
@@ -391,43 +335,6 @@ internal static class Prototype
                 slots[index].HoldNativeTransitionFocus();
             });
         }
-    }
-
-    private static void CycleVisual(int direction)
-    {
-        var filtered = choices.Where(c => c.Category == slots[selectedSlot].PartCategory.ToString() && (string.IsNullOrWhiteSpace(search) || c.Name.Contains(search, StringComparison.OrdinalIgnoreCase) || c.Id.ToString().Contains(search))).ToList();
-        if (filtered.Count == 0) { message = "No matching non-DLC appearances in this category."; return; }
-        var existing = draft.Slots.FirstOrDefault(s => Matches(s, selectedSlot));
-        int old = filtered.FindIndex(c => c.Id == existing?.ItemId);
-        int next = old < 0 ? (direction > 0 ? 0 : filtered.Count - 1) : (old + direction + filtered.Count) % filtered.Count;
-        var chosen = filtered[next];
-        draft.Slots.RemoveAll(s => Matches(s, selectedSlot));
-        draft.Slots.Add(new VisualSlot { Index = slots[selectedSlot].Index, Category = chosen.Category, ItemId = chosen.Id, ModelName = chosen.Model });
-        dirty = true;
-        slots[selectedSlot].Bind(draft.Slots.First(s => Matches(s, selectedSlot)));
-        message = "Draft changed. Save preset to keep it after restart.";
-    }
-
-    private static void Save()
-    {
-        if (storageBlocked) return;
-        string name = nameText.Trim();
-        if (name.Length == 0 || name.Length > 60) { message = "Enter a preset name (1-60 characters)."; return; }
-        var candidate = CopySavedFile();
-        var value = draft.Copy();
-        value.Name = name;
-        int index = value.UiSlotIndex.HasValue
-            ? candidate.Presets.FindIndex(p => p.UiSlotIndex == value.UiSlotIndex)
-            : candidate.Presets.FindIndex(p => p.Name == name);
-        if (index < 0) candidate.Presets.Add(value); else candidate.Presets[index] = value;
-        try
-        {
-            PresetStorage.Save(filePath, candidate);
-            saved = candidate;
-            LoadDraft(value);
-            message = "Saved: " + name;
-        }
-        catch (Exception ex) { message = "Save failed. Existing preset retained."; Plugin.Warn("PresetSaveError", new { error = ex.Message }); }
     }
 
     internal static string UiSlotLabel(int index)
@@ -462,7 +369,6 @@ internal static class Prototype
             LoadDraft(preset);
             RefreshFieldModelsNow();
             NativeDecorUi.RefreshAfterPresetLoad();
-            message = "Loaded slot " + (index + 1) + ": " + preset.Name;
             return true;
         }
         catch (Exception ex)
@@ -499,12 +405,10 @@ internal static class Prototype
             PresetStorage.Save(filePath, candidate);
             saved = candidate;
             LoadDraft(value);
-            message = "Saved slot " + (index + 1) + ": " + name;
             return true;
         }
         catch (Exception ex)
         {
-            message = "Save failed. Existing preset retained.";
             Plugin.Warn("PresetUiSaveError", new { slot = index + 1, error = ex.Message });
             return false;
         }
@@ -534,7 +438,6 @@ internal static class Prototype
         {
             PresetStorage.Save(filePath, candidate);
             saved = candidate;
-            message = "Deleted slot " + (index + 1) + ": " + existing.Name;
             return true;
         }
         catch (Exception ex)
@@ -544,69 +447,9 @@ internal static class Prototype
         }
     }
 
-    private static void CyclePreset(int direction)
+    internal static void RefreshEditorPresentation()
     {
-        if (dirty) { message = "Save or Revert draft before switching presets."; return; }
-        int index = Math.Max(0, saved.Presets.FindIndex(p => p.Name == draft.Name));
-        LoadDraft(saved.Presets[(index + direction + saved.Presets.Count) % saved.Presets.Count]);
-        message = "Loaded: " + draft.Name;
-    }
-
-    internal static void Draw()
-    {
-        if (shop == null || draft == null) return;
-        float x = Math.Max(16, Screen.width - 616);
-        const float y = 12;
-        if (wasEditing) NativeDecorUi.Draw(x, y);
-        GUI.Box(new Rect(x, y, 600, collapsed ? 40 : 436), "Bazaar Decor Transmog " + Plugin.Version + " - Debug / presets");
-        if (PanelControls.Button(new Rect(x + 554, y + 4, 38, 25), collapsed ? "+" : "-")) { collapsed = !collapsed; PanelTextInput.Blur(); }
-        if (collapsed) return;
-        GUI.Label(new Rect(x + 12, y + 26, 390, 24), "Preset: " + draft.Name + (dirty ? " * unsaved" : ""));
-        if (PanelControls.Button(new Rect(x + 408, y + 26, 78, 24), "Previous")) CyclePreset(-1);
-        if (PanelControls.Button(new Rect(x + 492, y + 26, 94, 24), "Next preset")) CyclePreset(1);
-        var selectedCategory = slots[selectedSlot].PartCategory;
-        if (PanelControls.Button(new Rect(x + 12, y + 58, 136, 28), (selectedCategory == BazaarCustomItemData.PartsCategory.OrnamentS ? "> " : "") + "Small")) selectedSlot = 0;
-        if (PanelControls.Button(new Rect(x + 154, y + 58, 136, 28), (selectedCategory == BazaarCustomItemData.PartsCategory.Tent ? "> " : "") + "Tent")) selectedSlot = 4;
-        if (PanelControls.Button(new Rect(x + 296, y + 58, 142, 28), (selectedCategory == BazaarCustomItemData.PartsCategory.OrnamentL ? "> " : "") + "Large")) selectedSlot = 5;
-        if (PanelControls.Button(new Rect(x + 444, y + 58, 142, 28), (selectedCategory == BazaarCustomItemData.PartsCategory.Shelf ? "> " : "") + "Shelves")) selectedSlot = 8;
-        selectedCategory = slots[selectedSlot].PartCategory;
-        if (selectedCategory == BazaarCustomItemData.PartsCategory.OrnamentS)
-            for (int i = 0; i < 4; i++)
-                if (PanelControls.Button(new Rect(x + 12 + i * 144, y + 90, 140, 28), (selectedSlot == i ? "> " : "") + SmallSlotNames[i])) selectedSlot = i;
-        if (selectedCategory == BazaarCustomItemData.PartsCategory.Tent)
-            PanelControls.Button(new Rect(x + 12, y + 90, 574, 28), "> Tent");
-        if (selectedCategory == BazaarCustomItemData.PartsCategory.OrnamentL)
-            for (int i = 0; i < 3; i++)
-                if (PanelControls.Button(new Rect(x + 12 + i * 192, y + 90, 188, 28), (selectedSlot == 5 + i ? "> " : "") + LargeSlotNames[i])) selectedSlot = 5 + i;
-        if (selectedCategory == BazaarCustomItemData.PartsCategory.Shelf)
-            for (int i = 0; i < 3; i++)
-                if (PanelControls.Button(new Rect(x + 12 + i * 192, y + 90, 188, 28), (selectedSlot == 8 + i ? "> " : "") + ShelfSlotNames[i])) selectedSlot = 8 + i;
-        var slot = slots[selectedSlot];
-        GUI.Label(new Rect(x + 12, y + 126, 575, 24), (wasEditing ? "Edited placement: " : "Actual / effects: ") + slot.Actual);
-        GUI.Label(new Rect(x + 12, y + 150, 575, 24), "Visual target: " + slot.Visual);
-        GUI.Label(new Rect(x + 12, y + 174, 575, 24), slot.Status);
-        GUI.Label(new Rect(x + 12, y + 206, 65, 24), "Search:");
-        search = PanelTextInput.Draw("search", new Rect(x + 80, y + 206, 140, 26), search, 60);
-        if (PanelControls.Button(new Rect(x + 224, y + 206, 68, 26), "Paste")) { search = PanelTextInput.Paste(search, 60); PanelTextInput.Blur(); message = "Search: " + search; }
-        if (PanelControls.Button(new Rect(x + 300, y + 206, 66, 26), "<")) CycleVisual(-1);
-        if (PanelControls.Button(new Rect(x + 372, y + 206, 66, 26), ">")) CycleVisual(1);
-        if (PanelControls.Button(new Rect(x + 446, y + 206, 140, 26), "Use actual")) SetDisplayMode("Actual");
-        if (AllowsHidden(slot.PartCategory) && PanelControls.Button(new Rect(x + 446, y + 238, 140, 26), "Hide object")) SetDisplayMode("Hidden");
-        if (PanelControls.Button(new Rect(x + 12, y + 274, 430, 28), Enabled ? "Transmog: ON" : "Transmog: OFF"))
-        {
-            SetEnabled(!Enabled);
-            NativeDecorUi.Sync();
-        }
-        GUI.Label(new Rect(x + 12, y + 310, 575, 24), "Tent applies open/closed; shelves keep products and sale points intact.");
-        GUI.Label(new Rect(x + 12, y + 340, 90, 24), "Save name:");
-        nameText = PanelTextInput.Draw("preset-name", new Rect(x + 105, y + 340, 215, 26), nameText, 60);
-        bool enabledBefore = GUI.enabled;
-        GUI.enabled = enabledBefore && !storageBlocked;
-        if (PanelControls.Button(new Rect(x + 330, y + 340, 128, 26), "Save preset")) Save();
-        GUI.enabled = enabledBefore;
-        if (PanelControls.Button(new Rect(x + 466, y + 340, 120, 26), "Revert draft"))
-            LoadDraft(saved.Presets.FirstOrDefault(p => p.Name == draft.Name) ?? saved.Presets[0]);
-        GUI.Label(new Rect(x + 12, y + 374, 575, 24), "Same name overwrites; a new name creates a preset.");
-        GUI.Label(new Rect(x + 12, y + 404, 575, 28), message);
+        if (shop != null && draft != null && wasEditing)
+            NativeDecorUi.RefreshPresentation();
     }
 }

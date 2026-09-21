@@ -16,9 +16,6 @@ internal sealed class SlotRuntime
     internal readonly Category PartCategory;
     internal int Index => slot;
     private VisualSlot binding;
-    internal string Actual => actual;
-    internal string Visual => visual;
-    internal string Status => status;
     internal SlotRuntime(int index, Category category = Category.OrnamentS) { slot = index; PartCategory = category; }
     internal void Bind(VisualSlot value)
     {
@@ -73,7 +70,6 @@ internal sealed class SlotRuntime
     private bool pending;
     private float nextCheck;
     private float requestStarted;
-    private string status = "Waiting for bazaar", actual = "-", visual = "-";
 
     internal void Observe(BazaarMyShop instance)
     {
@@ -247,14 +243,11 @@ internal sealed class SlotRuntime
         // every frame so its native renderer is masked before the next rendered frame.
         if (!immediate && Time.unscaledTime < nextCheck && (applied != null || pending || !Prototype.Enabled)) return;
         nextCheck = Time.unscaledTime + 0.5f;
-        // Information must remain available even while disabled or editing.
-        if (shop != null) Plugin.Guard("transmog-labels:" + slot, RefreshLabels);
         if (!Prototype.Enabled || shop == null || binding == null)
         {
             if (applied != null || pending || visualObject != null) Restore("disabled or shop unloaded");
             attemptedInstance = 0;
             attemptedVisualId = 0;
-            status = binding == null ? "Vanilla appearance" : Prototype.Enabled ? "Waiting for bazaar" : "OFF - vanilla appearance";
             return;
         }
         var manager = shop.BM;
@@ -262,7 +255,6 @@ internal sealed class SlotRuntime
         if (manager.IsCustomMode && !Prototype.EditorPreview)
         {
             if (applied != null || pending) Suspend();
-            status = "Vanilla editor - transmog suspended";
             return;
         }
         if (pending && Time.unscaledTime - requestStarted > 20f)
@@ -270,7 +262,7 @@ internal sealed class SlotRuntime
             generation++;
             pending = false;
             UnmaskSource();
-            Reject("Visual request timed out; toggle OFF/ON to retry");
+            Reject("Visual request timed out");
         }
         var model = CurrentModel();
         if (maskedSource != null && maskedSource != model) UnmaskSource();
@@ -280,23 +272,18 @@ internal sealed class SlotRuntime
             if (applied != null || pending) Restore("model inactive");
             attemptedInstance = 0;
             attemptedVisualId = 0;
-            status = "Waiting for active shop model";
             return;
         }
         if (applied != null && applied != model) Restore("model replaced");
         if (binding.IsActual || binding.IsHidden && !Prototype.AllowsHidden(PartCategory))
         {
             if (maskedSource != null) UnmaskSource();
-            status = "Actual / effects appearance";
-            visual = actual;
             return;
         }
         if (binding.IsHidden)
         {
             if (applied != null || visualObject != null) Restore("hidden appearance mode");
             MaskSource(model);
-            status = "Hidden appearance";
-            visual = "Hidden";
             return;
         }
         uint resolved = ResolveVisual();
@@ -311,20 +298,16 @@ internal sealed class SlotRuntime
         // Editor exit may return before its asynchronous model restoration finishes.
         if (model.name != actualPart.modelName && model.name != actualPart.modelName + "(Clone)")
         {
-            status = "Waiting for original slot model";
             return;
         }
         attemptedInstance = model.GetInstanceID();
         attemptedVisualId = resolved;
         var target = mdm.CustomPartsMaster.GetMasterData(resolved);
-        actual = ItemName(actualId);
-        visual = ItemName(resolved);
         if (actualId == 0) { Reject("Empty slot unsupported in prototype"); return; }
         if (!HasVisualGeometry(model)) { Reject("Actual model has no supported render geometry"); return; }
         if (!manager.IsCustomMode) MaskSource(model);
         pending = true;
         requestStarted = Time.unscaledTime;
-        status = "Loading visual...";
         int ticket = ++generation;
         try
         {
@@ -390,32 +373,6 @@ internal sealed class SlotRuntime
         return VisualIdentity.Resolve(identities, value.ItemId, category.ToString(), value.ModelName);
     }
 
-    private void RefreshLabels()
-    {
-        actual = "Placement not ready";
-        visual = binding == null || binding.IsActual || binding.IsHidden && !Prototype.AllowsHidden(PartCategory)
-            ? "Actual / effects appearance" : binding.IsHidden ? "Hidden" :
-            "Unresolved: " + binding.ModelName + " (" + binding.ItemId + ")";
-        var mdm = BokuMono.API.Bazaar.MDM;
-        if (mdm?.ItemMaster == null) return;
-        uint resolved = ResolveVisual();
-        if (resolved != 0) visual = ItemName(resolved);
-        // Show committed placement normally, or the editable layout while editing.
-        // Hover-only models are never treated as the effective placement.
-        var groups = CurrentData(shop.BM)?.PutPartsDataDic;
-        if (groups == null) return;
-        for (int g = 0; g < groups.Count; g++)
-        {
-            var group = groups[g];
-            if (group == null || group.Category != PartCategory || group.DataDic == null) continue;
-            if (slot >= group.DataDic.Count) { actual = "Slot unavailable"; return; }
-            uint id = group.DataDic[slot];
-            actual = id == 0 ? "Empty slot" : ItemName(id);
-            return;
-        }
-        actual = "Slot unavailable";
-    }
-
     internal uint ActualVisualId() => shop?.BM == null ? 0 : ActualId(shop.BM);
 
     private BazaarManager.CustomData CurrentData(BazaarManager manager) =>
@@ -432,12 +389,6 @@ internal sealed class SlotRuntime
                 return group.DataDic[slot];
         }
         return 0;
-    }
-
-    private string ItemName(uint id)
-    {
-        var master = BokuMono.API.Bazaar.MDM.ItemMaster;
-        return master.TryGetData(id, out var row) && row != null ? $"{row.ItemName} ({id})" : id.ToString();
     }
 
     internal static bool HasVisualGeometry(GameObject model)
@@ -573,7 +524,6 @@ internal sealed class SlotRuntime
             string after = Evidence(manager);
             bool unchanged = before == after;
             if (!unchanged) { Restore("verification mismatch"); Reject("Verification failed; restored original"); return; }
-            status = "ON - placement / sampled effects unchanged";
             TryPlayDecisionFeedback();
         }
         catch
@@ -614,7 +564,6 @@ internal sealed class SlotRuntime
             string after = Evidence(manager);
             bool unchanged = before == after;
             if (!unchanged) { Restore("verification mismatch"); Reject("Verification failed; restored original"); return; }
-            status = "ON - shelf shell changed; products / effects unchanged";
             TryPlayDecisionFeedback();
         }
         catch
@@ -812,7 +761,6 @@ internal sealed class SlotRuntime
 
     private void Reject(string reason)
     {
-        status = "Not applied: " + reason;
         Plugin.Warn("TransmogSkipped", new { slot, reason });
     }
 
@@ -826,8 +774,13 @@ public sealed class PrototypeDriver : MonoBehaviour
         Plugin.Guard("transmog-update", Prototype.Tick);
         Plugin.Guard("preset-ui-update", PresetUiProbe.Tick);
     }
-    public void LateUpdate() => Plugin.Guard("transmog-decision-landing", Prototype.UpdateDecisionDrops);
-    public void OnGUI() => Plugin.Guard("transmog-panel", Prototype.Draw);
+    public void LateUpdate()
+    {
+        Plugin.Guard("transmog-decision-landing", Prototype.UpdateDecisionDrops);
+        // Reassert presentation after the game's Update, before rendering. This used
+        // to run from the debug panel's OnGUI and must survive removal of that panel.
+        Plugin.Guard("appearance-presentation", Prototype.RefreshEditorPresentation);
+    }
     public void OnDestroy() => Plugin.Guard("transmog-cleanup", () => Prototype.Restore("driver destroyed"));
 }
 

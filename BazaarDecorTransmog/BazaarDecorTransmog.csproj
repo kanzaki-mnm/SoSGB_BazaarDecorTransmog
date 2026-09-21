@@ -14,8 +14,6 @@
     <Compile Include="Plugin.cs" /><Compile Include="ClosedTentProbe.cs" /><Compile Include="ClosedShelfProbe.cs" />
     <Compile Include="NativeDecorUi.cs" /><Compile Include="Localization.cs" />
     <Compile Include="PresetUiProbe.cs" />
-    <Compile Include="PanelTextInput.cs" />
-    <Compile Include="PanelControls.cs" />
     <Compile Include="Prototype.cs" /><Compile Include="PrototypeController.cs" /><Compile Include="Presets.cs" />
     <Compile Include="VisualIdentity.cs" />
     <Content Include="i18n\*.json"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>

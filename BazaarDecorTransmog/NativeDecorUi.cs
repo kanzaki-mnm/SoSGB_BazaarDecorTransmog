@@ -70,7 +70,6 @@ internal static class NativeDecorUi
     private const int ActualVeilOutlinePixels = 2;
     private static readonly Dictionary<BazaarCustomPageCategory, BazaarCustomItemData> actualChoiceData = new();
     private static readonly Dictionary<BazaarCustomPageCategory, BazaarCustomItemData> addedHiddenChoiceData = new();
-    private static string note = "Select a supported decor tab. Confirm changes appearance only.";
 
     internal static void Observe(UIBazaarCustomPage value)
     {
@@ -107,9 +106,6 @@ internal static class NativeDecorUi
         }
         if (wasTransitioning && FadeManager.IsInstance)
             FadeManager.FadeIn(fadeSpeed: ModeTransitionFadeSpeed);
-        note = Prototype.Enabled
-            ? "Editor closed; Transmog remains ON outside the editor."
-            : "Transmog OFF: the official list edits actual placement and effects.";
     }
 
     internal static bool CanToggle => Ready && Prototype.Enabled && page != null && page.gameObject.activeInHierarchy;
@@ -250,7 +246,6 @@ internal static class NativeDecorUi
         if (!Prototype.Enabled)
         {
             Exit();
-            note = "Transmog OFF: the official list edits actual placement and effects.";
             return;
         }
         if (!pageVisible)
@@ -338,7 +333,6 @@ internal static class NativeDecorUi
         if (!FocusAppliedAppearance(page.selectTabCategory) && lastFocusData != null)
             Select(lastFocusData, lastFocusCategory, false);
         RefreshOfficialFooter();
-        note = "Transmog ON: focus previews appearance; confirm keeps it in the draft.";
     }
 
     internal static void LeaveAppearance()
@@ -361,7 +355,6 @@ internal static class NativeDecorUi
         }
         EndExitPosePreservation();
         RefreshOfficialFooter();
-        note = "Editing actual placement and effects; Transmog remains ON outside the editor.";
     }
 
     internal static void Select(BazaarCustomItemData data, BazaarCustomPageCategory category, bool commit)
@@ -375,7 +368,6 @@ internal static class NativeDecorUi
             Prototype.NativeModeChoice(BazaarCustomItemData.ToPartsCategory(category),
                 BazaarCustomItemData.ToPartsCategoryIndex(category), "Actual", commit);
             if (commit) RefreshCheckmarks();
-            note = commit ? "Actual appearance kept in draft." : "Previewing the actual appearance.";
             return;
         }
         if (data != null && data.Category == category && data.IsUiRemove &&
@@ -384,7 +376,6 @@ internal static class NativeDecorUi
             Prototype.NativeModeChoice(BazaarCustomItemData.ToPartsCategory(category),
                 BazaarCustomItemData.ToPartsCategoryIndex(category), "Hidden", commit);
             if (commit) RefreshCheckmarks();
-            note = commit ? "Hidden appearance kept in draft." : "Previewing an empty appearance.";
             return;
         }
         if (data == null || data.PartsData == null || data.IsUiRemove ||
@@ -396,9 +387,6 @@ internal static class NativeDecorUi
         {
             // Empty cells and a transient old-category focus are both emitted by the stock
             // list while changing tabs. They are not requests to leave appearance mode.
-            note = data == null || data.PartsData == null || data.IsUiRemove
-                ? "Empty has no appearance to preview; appearance mode remains active."
-                : "Changing decor tab; appearance mode remains active.";
             return;
         }
         int index = BazaarCustomItemData.ToPartsCategoryIndex(category);
@@ -407,7 +395,6 @@ internal static class NativeDecorUi
         if (index < 0 || index > lastIndex) return;
         Prototype.NativeChoice(index, data.PartsData, commit);
         if (commit) RefreshCheckmarks();
-        note = commit ? "Appearance kept in draft. Save preset to persist it." : "Appearance preview. Confirm to keep; Back cancels preview.";
         // High-frequency appearance diagnostics disabled after implementation validation.
     }
 
@@ -933,7 +920,7 @@ internal static class NativeDecorUi
         lastFocusCategory = category;
     }
 
-    internal static void Draw(float x, float y)
+    internal static void RefreshPresentation()
     {
         if (!Ready || page == null) return;
         ApplyAppearanceGuide();
@@ -944,10 +931,6 @@ internal static class NativeDecorUi
             if (page.bazaarCustomDetail != null) page.bazaarCustomDetail.gameObject.SetActive(true);
             if (page.bazaarEffectDetail != null) page.bazaarEffectDetail.gameObject.SetActive(false);
         }
-        if (!Active) return;
-        if (titleApplied) return;
-        GUI.Box(new Rect(x, y - 70, 600, 66), "Official decor list - follows Transmog ON/OFF");
-        GUI.Label(new Rect(x + 12, y - 48, 576, 42), note);
     }
 
     private static void ApplyModeTitle()
