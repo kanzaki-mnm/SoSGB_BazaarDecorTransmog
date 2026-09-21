@@ -19,6 +19,33 @@ Check("cross-category rejected", 0, new[] { new VisualIdentity.Part(10, "Shelf",
 var duplicates = new[] { new VisualIdentity.Part(10, "OrnamentS", "a"), new VisualIdentity.Part(20, "OrnamentS", "a") };
 Check("ambiguous migration rejected", 0, duplicates, 99, "a");
 Check("exact ID disambiguates duplicate models", 20, duplicates, 20, "a");
+// Compare the streaming resolver with the previous rule across reused IDs,
+// duplicate rows, category boundaries and every ordering of three master rows.
+var identityCases = new[]
+{
+    new VisualIdentity.Part(10, "OrnamentS", "a"),
+    new VisualIdentity.Part(20, "OrnamentS", "a"),
+    new VisualIdentity.Part(10, "OrnamentS", "b"),
+    new VisualIdentity.Part(10, "Shelf", "a"),
+    new VisualIdentity.Part(20, "Shelf", "b"),
+    new VisualIdentity.Part(0, "OrnamentS", "a")
+};
+foreach (var firstRow in identityCases)
+foreach (var secondRow in identityCases)
+foreach (var thirdRow in identityCases)
+foreach (var category in new[] { "OrnamentS", "Shelf" })
+foreach (var model in new[] { "a", "b", "", "missing" })
+foreach (var savedId in new uint[] { 0, 10, 20, 99 })
+{
+    var rows = new[] { firstRow, secondRow, thirdRow };
+    var matches = rows.Where(row => row.Category == category && row.Model == model).ToArray();
+    uint expected = string.IsNullOrWhiteSpace(model) ? 0 :
+        matches.Any(row => row.Id == savedId) ? savedId : matches.Length == 1 ? matches[0].Id : 0;
+    if (VisualIdentity.Resolve(rows, savedId, category, model) != expected)
+        throw new Exception("streaming identity resolver changed a legacy match result");
+}
+passed++;
+Console.WriteLine("PASS streaming identity parity across 6912 master/query combinations");
 if (args.Length > 0)
 {
     using var catalog = JsonDocument.Parse(File.ReadAllText(args[0]).TrimStart('\uFEFF'));

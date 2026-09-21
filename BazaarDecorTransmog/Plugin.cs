@@ -20,7 +20,7 @@ public sealed class Plugin : BasePlugin
         Logger = Log;
         Localization.Load();
         PresetStorage.Report = ReportStorage;
-        Prototype.Configure();
+        AppearanceSession.Configure();
         var transmogHarmony = new Harmony("com.icy.bazaardecortransmog.prototype");
         try
         {
@@ -34,7 +34,7 @@ public sealed class Plugin : BasePlugin
             {
                 transmogHarmony.CreateClassProcessor(patch).Patch();
             }
-            NativeDecorUi.Ready = true;
+            AppearanceEditorUi.Ready = true;
             AddComponent<PrototypeDriver>();
         }
         catch (Exception ex) { Error("prototype-start", ex); return; }
@@ -68,11 +68,11 @@ public sealed class Plugin : BasePlugin
     nameof(BazaarMyShop.__c__DisplayClass52_0._LoadBazaarPartsModel_b__0))]
 internal static class NativeFieldModelReady
 {
-    static void Postfix() => Plugin.Guard("field-model-ready", Prototype.RefreshFieldModelsNow);
+    static void Postfix() => Plugin.Guard("field-model-ready", AppearanceSession.RefreshFieldModelsNow);
 }
 
 [HarmonyPatch(typeof(BazaarMyShop), nameof(BazaarMyShop.InitializeBazaarPartsModel))]
 internal static class NativeFieldModelInitialized
 {
-    static void Postfix() => Plugin.Guard("field-model-initialized", Prototype.RefreshFieldModelsNow);
+    static void Postfix() => Plugin.Guard("field-model-initialized", AppearanceSession.RefreshFieldModelsNow);
 }

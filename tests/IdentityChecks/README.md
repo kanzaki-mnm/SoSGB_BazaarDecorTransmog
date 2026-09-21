@@ -1,17 +1,19 @@
 # 保存・モデル識別の回帰テスト
 
 リポジトリのルートで実行します。.NET 6ランタイムと対応SDKが必要です。
-ゲームやBepInExは不要で、製品の `Presets.cs` / `VisualIdentity.cs` をリンクして検証します。
+ゲームやBepInExは不要で、製品の `PresetModels.cs` / `PresetStorage.cs` / `VisualIdentity.cs` をリンクして検証します。
 
 ```powershell
 dotnet run --project tests/IdentityChecks/IdentityChecks.csproj -- catalog-1.5.0-ja.json
 ```
 
-2026-09-21: 実カタログ照合を含む **75 checks passed**。
+2026-09-22: 実カタログ照合を含む **76 checks passed**。
+第4段階で一時リストを作らないモデル照合へ変更し、従来の判定との比較を追加しました。
+IDの再利用、重複行、カテゴリ違い、並び順を含む6,912通りを1項目として検証します。
 カタログ引数を省略すると実カタログの6項目だけ省略します。
 失敗時は例外で非ゼロ終了します。ファイル操作は実行ごとの専用一時ディレクトリ内だけで行い、ゲームの設定には触れません。
 
-## 今回の変更
+## 第1段階での変更（履歴）
 
 - 保存処理の `Plugin.Emit` 直接参照を、ホストが渡す `PresetStorage.Report` に置換。Unity/BepInExなしで製品の保存処理を検証するためです。Plugin起動時に従来のEmitを設定し、イベント名と内容を維持しています。
 - schema 5、同名禁止、正常bakがある場合も破損主ファイルを拒否する古い期待値を、現行schema 9・同名許可・bak復旧へ修正。

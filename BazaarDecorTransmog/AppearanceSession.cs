@@ -5,14 +5,14 @@ using UnityEngine;
 
 namespace BazaarDecorTransmog;
 
-internal static class Prototype
+internal static class AppearanceSession
 {
     internal static bool Enabled { get; private set; } = true;
     internal static bool EditorPreview { get; private set; }
-    private static readonly SlotRuntime[] slots = Enumerable.Range(0, 4).Select(i => new SlotRuntime(i))
-        .Append(new SlotRuntime(0, BazaarCustomItemData.PartsCategory.Tent))
-        .Concat(Enumerable.Range(0, 3).Select(i => new SlotRuntime(i, BazaarCustomItemData.PartsCategory.OrnamentL)))
-        .Concat(Enumerable.Range(0, 3).Select(i => new SlotRuntime(i, BazaarCustomItemData.PartsCategory.Shelf))).ToArray();
+    private static readonly SlotAppearance[] slots = Enumerable.Range(0, 4).Select(i => new SlotAppearance(i))
+        .Append(new SlotAppearance(0, BazaarCustomItemData.PartsCategory.Tent))
+        .Concat(Enumerable.Range(0, 3).Select(i => new SlotAppearance(i, BazaarCustomItemData.PartsCategory.OrnamentL)))
+        .Concat(Enumerable.Range(0, 3).Select(i => new SlotAppearance(i, BazaarCustomItemData.PartsCategory.Shelf))).ToArray();
     private static PresetFile saved;
     private static VisualPreset draft;
     private static VisualPreset appearanceEntrySnapshot;
@@ -78,7 +78,7 @@ internal static class Prototype
         var binding = draft.Slots.FirstOrDefault(s => Matches(s, runtime));
         if (binding == null || binding.IsActual || binding.IsHidden && !AllowsHidden(category))
             return slots[runtime].ActualVisualId();
-        return SlotRuntime.ResolveVisual(binding, category);
+        return SlotAppearance.ResolveVisual(binding, category);
     }
 
     internal static uint ActualAppearanceId(BazaarCustomItemData.PartsCategory category, int index)
@@ -172,7 +172,7 @@ internal static class Prototype
     {
         if (appearanceEntrySnapshot == null) return;
         LoadDraft(appearanceEntrySnapshot);
-        NativeDecorUi.RefreshAfterPresetLoad();
+        AppearanceEditorUi.RefreshAfterPresetLoad();
     }
 
     internal static void EndAppearanceSession() => appearanceEntrySnapshot = null;
@@ -310,12 +310,12 @@ internal static class Prototype
         bool editing = shop != null && shop.BM != null && shop.BM.IsCustomMode;
         if (editing != wasEditing)
         {
-            if (!editing) NativeDecorUi.Exit();
+            if (!editing) AppearanceEditorUi.Exit();
             Suspend();
             wasEditing = editing;
-            if (editing) NativeDecorUi.Sync();
+            if (editing) AppearanceEditorUi.Sync();
         }
-        if (editing) Plugin.Guard("native-ui-sync", NativeDecorUi.Sync);
+        if (editing) Plugin.Guard("native-ui-sync", AppearanceEditorUi.Sync);
         for (int i = 0; i < slots.Length; i++)
         {
             int index = i;
@@ -355,7 +355,7 @@ internal static class Prototype
         var binding = preset.Slots.FirstOrDefault(s => Matches(s, runtime));
         if (binding == null || binding.IsActual || binding.IsHidden && !AllowsHidden(category))
             return slots[runtime].ActualVisualId();
-        return SlotRuntime.ResolveVisual(binding, category);
+        return SlotAppearance.ResolveVisual(binding, category);
     }
 
     internal static bool LoadUiSlot(int index)
@@ -368,12 +368,12 @@ internal static class Prototype
         {
             LoadDraft(preset);
             RefreshFieldModelsNow();
-            NativeDecorUi.RefreshAfterPresetLoad();
+            AppearanceEditorUi.RefreshAfterPresetLoad();
             return true;
         }
         catch (Exception ex)
         {
-            try { LoadDraft(previous); NativeDecorUi.RefreshAfterPresetLoad(); }
+            try { LoadDraft(previous); AppearanceEditorUi.RefreshAfterPresetLoad(); }
             catch (Exception rollbackError) { Plugin.Warn("PresetUiLoadRollbackError", new { error = rollbackError.Message }); }
             Plugin.Warn("PresetUiLoadError", new { slot = index + 1, error = ex.Message });
             return false;
@@ -450,6 +450,6 @@ internal static class Prototype
     internal static void RefreshEditorPresentation()
     {
         if (shop != null && draft != null && wasEditing)
-            NativeDecorUi.RefreshPresentation();
+            AppearanceEditorUi.RefreshPresentation();
     }
 }

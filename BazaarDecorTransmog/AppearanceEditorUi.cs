@@ -1,3 +1,4 @@
+using static BazaarDecorTransmog.UiTextIds;
 using BokuMono;
 using BokuMono.Data;
 using HarmonyLib;
@@ -8,7 +9,7 @@ using UnityEngine.UI;
 
 namespace BazaarDecorTransmog;
 
-internal static class NativeDecorUi
+internal static class AppearanceEditorUi
 {
     internal static bool Active { get; private set; }
     internal static bool Ready;
@@ -23,24 +24,6 @@ internal static class NativeDecorUi
     private static Color originalIconColor;
     private static UIButtonGuide appearanceGuide;
     private static UIMenuFooter menuFooter;
-    private const uint AppearanceGuideTextId = 0xBD700001;
-    private const uint PresetsGuideTextId = 0xBD700003;
-    // Confirmed from the stock appearance-mode B/Esc footer:
-    // KeyButtonGuideText / "Cancel" ("やめる" in Japanese).
-    internal const uint StockCancelFooterTextId = 1200;
-    internal const uint PresetDeleteGuideTextId = 0xBD700011;
-    internal const uint PresetSaveTextId = 0xBD700005;
-    internal const uint PresetLoadTextId = 0xBD700006;
-    // Keep the expandable slot-label range separate from the one-off UI
-    // strings above. Slots 1-6 previously reached 0xBD70000E, which was the
-    // existing name-input Cancel label.
-    internal const uint PresetEmptySlotTextId = 0xBD700020;
-    internal const uint PresetSaveCompletedTextId = 0xBD70000F;
-    internal const uint PresetLoadCompletedTextId = 0xBD700010;
-    private const uint AppearanceExitConfirmTextId = 0xBD700014;
-    private const uint StockApplyAndReturnChoiceTextId = 1110;
-    private const uint StockDiscardAndReturnChoiceTextId = 1120;
-    private const uint StockCancelChoiceTextId = 1010;
     private static int lastToggleFrame = -1;
     private static BazaarCustomItemData lastFocusData;
     private static BazaarCustomPageCategory lastFocusCategory;
@@ -95,8 +78,8 @@ internal static class NativeDecorUi
         RemoveAppearanceGuide();
         if (wasActive)
         {
-            Prototype.EndNativePreview();
-            Prototype.EndAppearanceSession();
+            AppearanceSession.EndNativePreview();
+            AppearanceSession.EndAppearanceSession();
         }
         if (wasActive && page != null)
         {
@@ -108,7 +91,7 @@ internal static class NativeDecorUi
             FadeManager.FadeIn(fadeSpeed: ModeTransitionFadeSpeed);
     }
 
-    internal static bool CanToggle => Ready && Prototype.Enabled && page != null && page.gameObject.activeInHierarchy;
+    internal static bool CanToggle => Ready && AppearanceSession.Enabled && page != null && page.gameObject.activeInHierarchy;
     internal static Transform PageTransform => page?.transform;
 
     internal static void EnterAppearanceFromWest()
@@ -123,7 +106,7 @@ internal static class NativeDecorUi
     {
         if (!Active || modeTransitioning || exitConfirmationOpen) return;
         BeginExitPosePreservation();
-        if (!Prototype.HasAppearanceSessionChanges())
+        if (!AppearanceSession.HasAppearanceSessionChanges())
         {
             FinishAppearanceSessionAndLeave();
             return;
@@ -154,10 +137,10 @@ internal static class NativeDecorUi
         exitConfirmationOpen = false;
         bool leave = false;
         if (index == 0)
-            leave = Prototype.SaveCurrentAppearance();
+            leave = AppearanceSession.SaveCurrentAppearance();
         else if (index == 1)
         {
-            Prototype.RevertAppearanceSession();
+            AppearanceSession.RevertAppearanceSession();
             leave = true;
         }
         RestoreExitPose();
@@ -185,14 +168,14 @@ internal static class NativeDecorUi
 
     private static void BeginExitPosePreservation()
     {
-        exitPoseHovered = Prototype.CurrentEditorPoseHovered;
+        exitPoseHovered = AppearanceSession.CurrentEditorPoseHovered;
         exitPosePreserving = true;
         RestoreExitPose();
     }
 
     private static void RestoreExitPose()
     {
-        if (exitPosePreserving) Prototype.RestoreCurrentEditorPose(exitPoseHovered);
+        if (exitPosePreserving) AppearanceSession.RestoreCurrentEditorPose(exitPoseHovered);
     }
 
     private static void RestoreExitPoseAndEndPreservation()
@@ -206,7 +189,7 @@ internal static class NativeDecorUi
     private static void FinishAppearanceSessionAndLeave()
     {
         RestoreExitPose();
-        Prototype.EndAppearanceSession();
+        AppearanceSession.EndAppearanceSession();
         TransitionAppearance(false);
     }
 
@@ -243,7 +226,7 @@ internal static class NativeDecorUi
     internal static void Sync()
     {
         bool pageVisible = Ready && page != null && page.gameObject.activeInHierarchy;
-        if (!Prototype.Enabled)
+        if (!AppearanceSession.Enabled)
         {
             Exit();
             return;
@@ -327,8 +310,8 @@ internal static class NativeDecorUi
         // Capture the lift baseline only after the stock preview is back on the actually
         // equipped model. Capturing the just-hovered model first made its existing lift
         // get counted again when the appearance preview was applied.
-        Prototype.BeginNativePreview(page.selectTabCategory);
-        Prototype.BeginAppearanceSession();
+        AppearanceSession.BeginNativePreview(page.selectTabCategory);
+        AppearanceSession.BeginAppearanceSession();
         RefreshCheckmarks();
         if (!FocusAppliedAppearance(page.selectTabCategory) && lastFocusData != null)
             Select(lastFocusData, lastFocusCategory, false);
@@ -341,8 +324,8 @@ internal static class NativeDecorUi
         Active = false;
         RestoreChoiceLists();
         RestoreModeTitle();
-        Prototype.EndNativePreview();
-        Prototype.EndAppearanceSession();
+        AppearanceSession.EndNativePreview();
+        AppearanceSession.EndAppearanceSession();
         if (page != null)
         {
             RestoreDetailChildren();
@@ -365,15 +348,15 @@ internal static class NativeDecorUi
             UpdateAppearanceDetail(data);
         if (data != null && data.Category == category && IsActualChoice(data))
         {
-            Prototype.NativeModeChoice(BazaarCustomItemData.ToPartsCategory(category),
+            AppearanceSession.NativeModeChoice(BazaarCustomItemData.ToPartsCategory(category),
                 BazaarCustomItemData.ToPartsCategoryIndex(category), "Actual", commit);
             if (commit) RefreshCheckmarks();
             return;
         }
         if (data != null && data.Category == category && data.IsUiRemove &&
-            Prototype.AllowsHidden(BazaarCustomItemData.ToPartsCategory(category)))
+            AppearanceSession.AllowsHidden(BazaarCustomItemData.ToPartsCategory(category)))
         {
-            Prototype.NativeModeChoice(BazaarCustomItemData.ToPartsCategory(category),
+            AppearanceSession.NativeModeChoice(BazaarCustomItemData.ToPartsCategory(category),
                 BazaarCustomItemData.ToPartsCategoryIndex(category), "Hidden", commit);
             if (commit) RefreshCheckmarks();
             return;
@@ -393,7 +376,7 @@ internal static class NativeDecorUi
         int lastIndex = data.PartsData.Category == BazaarCustomItemData.PartsCategory.Tent ? 0 :
             data.PartsData.Category == BazaarCustomItemData.PartsCategory.OrnamentS ? 3 : 2;
         if (index < 0 || index > lastIndex) return;
-        Prototype.NativeChoice(index, data.PartsData, commit);
+        AppearanceSession.NativeChoice(index, data.PartsData, commit);
         if (commit) RefreshCheckmarks();
         // High-frequency appearance diagnostics disabled after implementation validation.
     }
@@ -455,14 +438,14 @@ internal static class NativeDecorUi
         EnsureChoiceList(category);
         if (!owner.cacheCustomPartsListDic.TryGetValue(category, out var items) || items == null)
             return false;
-        if (Prototype.UsesActualAppearance(partCategory, slot) && actualChoiceData.TryGetValue(category, out var actual) &&
+        if (AppearanceSession.UsesActualAppearance(partCategory, slot) && actualChoiceData.TryGetValue(category, out var actual) &&
             items.Count > 0 && SameData(items[0], actual)) { focusId = 0; return true; }
-        if (Prototype.UsesHiddenAppearance(partCategory, slot))
+        if (AppearanceSession.UsesHiddenAppearance(partCategory, slot))
         {
             for (int i = 0; i < items.Count; i++)
                 if (items[i]?.IsUiRemove == true) { focusId = i; return true; }
         }
-        uint appearanceId = Prototype.AppearanceId(partCategory, slot);
+        uint appearanceId = AppearanceSession.AppearanceId(partCategory, slot);
         if (appearanceId == 0) return false;
         for (int i = 0; i < items.Count; i++)
         {
@@ -481,11 +464,11 @@ internal static class NativeDecorUi
         if (!Active || item == null) return false;
         int slot = BazaarCustomItemData.ToPartsCategoryIndex(item.Category);
         var category = BazaarCustomItemData.ToPartsCategory(item.Category);
-        if (IsActualChoice(item)) selected = Prototype.UsesActualAppearance(category, slot);
-        else if (item.IsUiRemove) selected = Prototype.UsesHiddenAppearance(category, slot);
-        else selected = !Prototype.UsesActualAppearance(category, slot) &&
-            !Prototype.UsesHiddenAppearance(category, slot) && item.PartsData != null &&
-            Prototype.AppearanceId(category, slot) == item.PartsData.Id;
+        if (IsActualChoice(item)) selected = AppearanceSession.UsesActualAppearance(category, slot);
+        else if (item.IsUiRemove) selected = AppearanceSession.UsesHiddenAppearance(category, slot);
+        else selected = !AppearanceSession.UsesActualAppearance(category, slot) &&
+            !AppearanceSession.UsesHiddenAppearance(category, slot) && item.PartsData != null &&
+            AppearanceSession.AppearanceId(category, slot) == item.PartsData.Id;
         return true;
     }
 
@@ -497,7 +480,7 @@ internal static class NativeDecorUi
 
     internal static bool IsModeChoiceForSound(BazaarCustomItemData data) =>
         IsActualChoice(data) || data?.IsUiRemove == true &&
-        Prototype.AllowsHidden(BazaarCustomItemData.ToPartsCategory(data.Category));
+        AppearanceSession.AllowsHidden(BazaarCustomItemData.ToPartsCategory(data.Category));
 
     internal static void EnsureChoiceLists()
     {
@@ -514,7 +497,7 @@ internal static class NativeDecorUi
             partCategory != BazaarCustomItemData.PartsCategory.OrnamentS &&
             partCategory != BazaarCustomItemData.PartsCategory.OrnamentL &&
             partCategory != BazaarCustomItemData.PartsCategory.Shelf) return;
-        uint actualId = Prototype.ActualAppearanceId(partCategory, slot);
+        uint actualId = AppearanceSession.ActualAppearanceId(partCategory, slot);
         if (actualId == 0) return;
         BazaarCustomItemData source = null;
         for (int i = 0; i < items.Count; i++)
@@ -542,7 +525,7 @@ internal static class NativeDecorUi
         Il2CppSystem.Collections.Generic.List<BazaarCustomItemData> items,
         BazaarCustomItemData.PartsCategory partCategory)
     {
-        if (!Prototype.AllowsHidden(partCategory)) return;
+        if (!AppearanceSession.AllowsHidden(partCategory)) return;
         for (int i = 1; i < items.Count; i++)
             if (items[i]?.IsUiRemove == true)
             {
@@ -569,7 +552,7 @@ internal static class NativeDecorUi
         for (int i = items.Count - 1; i >= 0; i--)
             if (SameData(items[i], actual)) items.RemoveAt(i);
         items.Insert(0, actual);
-        if (Prototype.AllowsHidden(BazaarCustomItemData.ToPartsCategory(category)))
+        if (AppearanceSession.AllowsHidden(BazaarCustomItemData.ToPartsCategory(category)))
         {
             BazaarCustomItemData hidden = null;
             for (int i = items.Count - 1; i >= 1; i--)
@@ -822,7 +805,7 @@ internal static class NativeDecorUi
     {
         if (actualAppearanceBadgeSprite != null) return actualAppearanceBadgeSprite;
         const string resource = "BazaarDecorTransmog.Assets.actual_appearance_icon.rgba";
-        using var stream = typeof(NativeDecorUi).Assembly.GetManifestResourceStream(resource);
+        using var stream = typeof(AppearanceEditorUi).Assembly.GetManifestResourceStream(resource);
         if (stream == null)
         {
             Plugin.Warn("NativeActualBadgeImageMissing", new { resource });
@@ -994,11 +977,11 @@ internal static class NativeDecorUi
 
     private static string ReplacementTitle(string current)
     {
-        switch (PresetUiProbe.CurrentHeaderMode)
+        switch (PresetUiController.CurrentHeaderMode)
         {
-            case PresetUiProbe.HeaderMode.Save:
+            case PresetUiController.HeaderMode.Save:
                 return Localization.Get("presets.menu.save");
-            case PresetUiProbe.HeaderMode.Load:
+            case PresetUiController.HeaderMode.Load:
                 return Localization.Get("presets.menu.load");
         }
         return current switch
@@ -1065,7 +1048,7 @@ internal static class NativeDecorUi
         appearanceGuideResumeFrame = -1;
     }
 
-    internal static bool ShouldInjectGuide => Prototype.Enabled && page != null &&
+    internal static bool ShouldInjectGuide => AppearanceSession.Enabled && page != null &&
         !normalEditorDialogOpen && !suppressAppearanceGuideUntilPageExit &&
         (appearanceGuideResumeFrame < 0 || Time.frameCount >= appearanceGuideResumeFrame);
     internal static void RefreshFooterForPresetState() => RefreshOfficialFooter();
@@ -1073,8 +1056,8 @@ internal static class NativeDecorUi
     internal static uint CurrentPresetsGuideTextId => PresetsGuideTextId;
     internal static bool TryGetGuideText(uint textId, out string text)
     {
-        if (PresetUiProbe.TryGetNameText(textId, out text)) return true;
-        if (PresetUiProbe.TryGetDeleteText(textId, out text)) return true;
+        if (PresetUiController.TryGetNameText(textId, out text)) return true;
+        if (PresetUiController.TryGetDeleteText(textId, out text)) return true;
         if (textId == AppearanceGuideTextId)
         {
             text = Localization.Get("appearance.title");
@@ -1102,7 +1085,7 @@ internal static class NativeDecorUi
         }
         if (textId >= PresetEmptySlotTextId && textId < PresetEmptySlotTextId + PresetStorage.UiSlotCount)
         {
-            text = Prototype.UiSlotLabel((int)(textId - PresetEmptySlotTextId));
+            text = AppearanceSession.UiSlotLabel((int)(textId - PresetEmptySlotTextId));
             return true;
         }
         if (textId == PresetSaveCompletedTextId)
@@ -1124,347 +1107,4 @@ internal static class NativeDecorUi
         return false;
     }
 
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.UpdateCachePartsList),
-    new[] { typeof(Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray<ItemData>), typeof(BazaarCustomPageCategory) })]
-internal static class NativeAppearanceChoiceListUpdate
-{
-    static void Postfix(BazaarCustomPageCategory category)
-    {
-        if (NativeDecorUi.Active)
-            Plugin.Guard("native-choice-list", () => NativeDecorUi.EnsureChoiceList(category));
-    }
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.BazaarCustomDataList))]
-internal static class NativeAppearanceDisplayList
-{
-    static void Postfix(ref Il2CppSystem.Collections.Generic.List<BazaarCustomItemData> __result)
-    {
-        if (NativeDecorUi.Active)
-        {
-            var list = __result;
-            Plugin.Guard("native-display-list", () => NativeDecorUi.DecorateDisplayList(list));
-        }
-    }
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.UpdateCachePartsList), new Type[0])]
-internal static class NativeAppearanceAllChoiceListsUpdate
-{
-    static void Postfix()
-    {
-        if (NativeDecorUi.Active)
-            Plugin.Guard("native-choice-lists", NativeDecorUi.EnsureChoiceLists);
-    }
-}
-
-[HarmonyPatch(typeof(LanguageManager), nameof(LanguageManager.GetLocalizeText),
-    new[] { typeof(LocalizeTextTableType), typeof(uint), typeof(bool) })]
-internal static class NativeAppearanceGuideLocalization
-{
-    static bool Prefix(LanguageManager __instance, LocalizeTextTableType tableType, uint textId, ref string __result)
-    {
-        Localization.SetLanguage(__instance.CurrentLanguage);
-        if (!NativeDecorUi.TryGetGuideText(textId, out var text)) return true;
-        __result = text;
-        return false;
-    }
-}
-
-[HarmonyPatch(typeof(UIMenuFooter), nameof(UIMenuFooter.SortGuide))]
-internal static class NativeAppearanceFooterGuideData
-{
-    static void Postfix(ref Il2CppSystem.Collections.Generic.List<UIButtonGuideData> __result)
-    {
-        if (__result == null) return;
-
-        // The Start guide is ours (+ / Tab: Presets).  While a preset dialog is
-        // in front, remove it from the official guide data before the footer
-        // constructs its buttons.  Do not toggle a rendered GameObject here:
-        // UIMenuFooter recreates those objects during updates.
-        if (PresetUiProbe.IsPresetUiOpen)
-        {
-            for (var i = __result.Count - 1; i >= 0; i--)
-            {
-                var guide = __result[i];
-                if (guide != null && guide.button == GuideKey.Start &&
-                    guide.textId == NativeDecorUi.CurrentPresetsGuideTextId)
-                    __result.RemoveAt(i);
-            }
-        }
-
-        if (PresetUiProbe.IsNameInputOpen)
-        {
-            // In the Menu action set, East is the stock A / Confirm guide.
-            // Keep it intact and add South as B / Cancel.  GuideKey names are
-            // logical positions, not Nintendo face-button labels.
-            var hasCancel = false;
-            for (var i = 0; i < __result.Count; i++)
-            {
-                var guide = __result[i];
-                if (guide == null) continue;
-                if (guide.button == GuideKey.South)
-                {
-                    hasCancel = true;
-                }
-            }
-
-            if (!hasCancel)
-            {
-                __result.Insert(0, new UIButtonGuideData(
-                    GuideKey.South,
-                    NativeDecorUi.StockCancelFooterTextId,
-                    LocalizeTextTableType.KeyButtonGuideText,
-                    InputKeyBind.InputActionSet.Menu));
-            }
-            return;
-        }
-        if (PresetUiProbe.IsSlotMenuOpen)
-        {
-            for (var i = __result.Count - 1; i >= 0; i--)
-                if (__result[i] != null && __result[i].button == GuideKey.North)
-                    __result.RemoveAt(i);
-            __result.Insert(0, new UIButtonGuideData(
-                GuideKey.North,
-                NativeDecorUi.PresetDeleteGuideTextId,
-                LocalizeTextTableType.KeyButtonGuideText,
-                InputKeyBind.InputActionSet.Menu));
-            return;
-        }
-        if (!NativeDecorUi.ShouldInjectGuide || __result == null) return;
-        // Appearance mode is a child view: B / Esc is the only exit action.
-        // Hide both the stock detail guide and the X / F guide while it is active.
-        if (NativeDecorUi.Active)
-        {
-            for (int i = __result.Count - 1; i >= 0; i--)
-                if (__result[i] != null &&
-                    (__result[i].button == GuideKey.North || __result[i].button == GuideKey.West))
-                    __result.RemoveAt(i);
-            if (!PresetUiProbe.IsPresetUiOpen)
-            {
-                __result.Insert(0, new UIButtonGuideData(
-                    GuideKey.Start,
-                    NativeDecorUi.CurrentPresetsGuideTextId,
-                    LocalizeTextTableType.KeyButtonGuideText,
-                    InputKeyBind.InputActionSet.Menu));
-            }
-            return;
-        }
-        // Rejoin the stock editor footer in the exact rebuild that restores its
-        // Y / North guide. This avoids a frame-count race after closing a modal.
-        bool hasStockDetailGuide = false;
-        for (int i = 0; i < __result.Count; i++)
-        {
-            if (__result[i] != null && __result[i].button == GuideKey.North)
-            {
-                hasStockDetailGuide = true;
-                break;
-            }
-        }
-        if (!hasStockDetailGuide) return;
-        var data = new UIButtonGuideData(
-            GuideKey.West,
-            NativeDecorUi.CurrentGuideTextId,
-            LocalizeTextTableType.KeyButtonGuideText,
-            InputKeyBind.InputActionSet.Menu);
-        __result.Insert(0, data);
-    }
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.OnShowDetail))]
-internal static class NativeAppearanceDetailGuard
-{
-    static bool Prefix()
-    {
-        if (!NativeDecorUi.Active) return true;
-        return false;
-    }
-}
-
-// The stock input route plays its UI sound before calling OnShowDetail.  Blocking
-// the detail callback alone therefore leaves a stray sound behind in appearance
-// mode.  Consume the North / Y action at the controllable-UI boundary instead.
-[HarmonyPatch(typeof(ControllableUI), nameof(ControllableUI.OnNorth))]
-internal static class NativeAppearanceDetailInputGuard
-{
-    static bool Prefix()
-    {
-        // UISelectDialog receives Y through ControllableUI.OnNorth.  Handle
-        // our slot-list command here before the appearance page's generic
-        // detail guard consumes it.
-        if (PresetUiProbe.TryOpenDeleteForFocusedSlot()) return false;
-        if (!NativeDecorUi.Active) return true;
-        return false;
-    }
-}
-
-// The stock object-edit exit dialog uses choice indexes 0/1 to leave the page
-// and index 2 to return to editing. Observe the decision before the stock
-// callback runs so our extra footer guide follows the same transition.
-[HarmonyPatch(typeof(UIDialog), nameof(UIDialog.OnDecide))]
-internal static class NativeStockObjectExitChoiceGuideState
-{
-    static void Prefix(UIDialog __instance, int id)
-    {
-        if (NativeDecorUi.Active || __instance == null) return;
-        var dialogs = Resources.FindObjectsOfTypeAll<UIDefaultDialog>();
-        foreach (var dialog in dialogs)
-        {
-            if (dialog == null || !dialog.gameObject.activeInHierarchy || dialog.infoId != 116000) continue;
-            NativeDecorUi.ObserveStockObjectExitChoice(id);
-            return;
-        }
-    }
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.ShowPage))]
-internal static class NativePageShown
-{
-    static void Prefix(UIBazaarCustomPage __instance) =>
-        Plugin.Guard("native-ui-page-prepare", () => NativeDecorUi.Observe(__instance));
-
-    static void Postfix() => Plugin.Guard("native-ui-page-ready", NativeDecorUi.Sync);
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.OnFocusIn))]
-internal static class NativeFocus
-{
-    static bool Prefix(BazaarCustomItemData data, BazaarCustomPageCategory category)
-    {
-        if (NativeDecorUi.TryPreserveExitPoseOnFocus(data, category)) return false;
-        if (!NativeDecorUi.Active || NativeDecorUi.AllowStockFocus)
-        {
-            NativeDecorUi.RememberFocus(data, category);
-            return true;
-        }
-        Plugin.Guard("native-ui-focus", () => NativeDecorUi.Select(data, category, false));
-        return false;
-    }
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.GetSetFocusId))]
-internal static class NativeAppearanceInitialFocus
-{
-    static void Postfix(UIBazaarCustomPage __instance, BazaarCustomPageCategory category, ref int __result)
-    {
-        if (NativeDecorUi.TryGetAppearanceFocusId(__instance, category, out int focusId))
-            __result = focusId;
-    }
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.FocusCategoryBeforeModel))]
-internal static class NativeAppearanceTabPreviewGuard
-{
-    static bool Prefix(BazaarCustomPageCategory category)
-    {
-        if (!NativeDecorUi.Active) return true;
-        // The stock tab transition briefly reloads the outgoing slot's real/effect model
-        // before the list sends its new focus. Our focus handler supplies the appearance
-        // preview immediately afterward, so the intermediate real-model reload is unwanted.
-        return false;
-    }
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPartsIconContent), nameof(UIBazaarCustomPartsIconContent.UpdateContentUniqueData))]
-internal static class NativeAppearanceCheckmark
-{
-    static void Postfix(UIBazaarCustomPartsIconContent __instance)
-    {
-        if (NativeDecorUi.Active)
-            Plugin.Guard("appearance-checkmark", () => NativeDecorUi.UpdateCheckmark(__instance));
-    }
-
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.OnDeside))]
-internal static class NativeDecide
-{
-    static bool Prefix(UIBazaarCustomPage __instance, BazaarCustomItemData data)
-    {
-        if (!NativeDecorUi.Active) return true;
-        Plugin.Guard("native-ui-decide", () => NativeDecorUi.Select(data, __instance.selectTabCategory, true));
-        return false;
-    }
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.OnCanacel))]
-internal static class NativeCancel
-{
-    static bool Prefix()
-    {
-        if (NativeDecorUi.IsModeTransitioning) return false;
-        if (!NativeDecorUi.Active) return true;
-        // A modal dialog or keyboard owns B / Esc until it closes. Let the game's
-        // own dialog manager handle it instead of leaving the appearance editor.
-        var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
-        if (manager != null && manager.TryGetDialogMask(out _)) return true;
-        Plugin.Guard("native-ui-cancel", NativeDecorUi.LeaveAppearanceFromCancel);
-        return false;
-    }
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.OnClose))]
-internal static class NativePageClosed
-{
-    static void Prefix() => Plugin.Guard("native-ui-close", NativeDecorUi.Exit);
-}
-
-[HarmonyPatch(typeof(BazaarManager), nameof(BazaarManager.SetCustomParts))]
-internal static class NativePlacementGuard
-{
-    static bool Prefix(uint itemId, BazaarCustomItemData.PartsCategory category, int index, ref bool __state)
-    {
-        __state = !NativeDecorUi.Active;
-        if (__state) return true;
-        return false;
-    }
-
-    static void Postfix(BazaarCustomItemData.PartsCategory category, int index, bool __state)
-    {
-        if (!__state) return;
-        Plugin.Guard("actual-placement-changed", () => Prototype.ActualPlacementChanged(category, index));
-    }
-}
-
-[HarmonyPatch(typeof(ControllableUI), nameof(ControllableUI.OnWest))]
-internal static class NativeAppearanceInput
-{
-    static bool Prefix(ControllableUI __instance)
-    {
-        if (!NativeDecorUi.CanToggle || __instance == null || NativeDecorUi.PageTransform == null ||
-            !__instance.transform.IsChildOf(NativeDecorUi.PageTransform)) return true;
-        if (NativeDecorUi.IsModeTransitioning) return false;
-        // West/X/F is the entry command only. Leaving the appearance mode is always
-        // handled by the normal cancel command, so it reads as a child editor.
-        Plugin.Guard("native-ui-mode-enter", NativeDecorUi.EnterAppearanceFromWest);
-        return false;
-    }
-}
-
-[HarmonyPatch(typeof(UIMenuManager), nameof(UIMenuManager.OnStart))]
-internal static class NativePresetStartProbe
-{
-    static bool Prefix()
-    {
-        if (!NativeDecorUi.Active) return true;
-        Plugin.Guard("preset-dialog-probe", PresetUiProbe.Open);
-        return false;
-    }
-}
-
-[HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage._BazaarCustomScrollGroupData_b__26_0))]
-internal static class NativeAppearanceChoiceSound
-{
-    private static Il2CppSystem.Func<UISoundTypes> cancelSound;
-
-    static void Postfix(BazaarCustomItemData data, ref UISound __result)
-    {
-        if (!NativeDecorUi.Active || data == null ||
-            !NativeDecorUi.IsModeChoiceForSound(data) || __result == null) return;
-        cancelSound ??= Il2CppInterop.Runtime.DelegateSupport.ConvertDelegate<Il2CppSystem.Func<UISoundTypes>>(
-            (Func<UISoundTypes>)(() => UISoundTypes.Cancel));
-        __result.ResetFuncEast(cancelSound);
-    }
 }

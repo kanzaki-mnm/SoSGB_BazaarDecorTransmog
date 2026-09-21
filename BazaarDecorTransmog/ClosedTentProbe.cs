@@ -32,9 +32,9 @@ internal static class ClosedTentProbe
             // the one-frame magenta tent. Wait until the stock field root is live.
             if (root == null || !root.gameObject.activeInHierarchy) return;
 
-            var binding = Prototype.TentBinding;
+            var binding = AppearanceSession.TentBinding;
             string bindingKey = BindingKey(binding);
-            if (!Prototype.Enabled || binding == null || binding.IsActual || model == null)
+            if (!AppearanceSession.Enabled || binding == null || binding.IsActual || model == null)
             {
                 Restore("disabled, vanilla, or source unavailable");
                 return;
@@ -68,10 +68,10 @@ internal static class ClosedTentProbe
             var actualPart = mdm?.CustomPartsMaster?.GetMasterData(actualId);
             if (actualId == 0 || actualPart == null || actualPart.Category != Category.Tent) return;
             if (model.name != actualPart.modelName && model.name != actualPart.modelName + "(Clone)") return;
-            uint visualId = SlotRuntime.ResolveVisual(binding, Category.Tent);
+            uint visualId = SlotAppearance.ResolveVisual(binding, Category.Tent);
             var target = mdm.CustomPartsMaster.GetMasterData(visualId);
             if (visualId == 0 || target == null) return;
-            if (!SlotRuntime.StaticVisualTree(model))
+            if (!SlotAppearance.StaticVisualTree(model))
             {
                 Plugin.Warn("ClosedTentRejected", new { reason = "source hierarchy unsupported", actualId, visualId });
                 RequestStarted = Time.unscaledTime + 20f;
@@ -90,11 +90,11 @@ internal static class ClosedTentProbe
                     if (ticket != Generation) return;
                     Pending = false;
                     var current = Parts.m_PartsObject?.Item2;
-                    var currentBinding = Prototype.TentBinding;
-                    if (!Prototype.Enabled || current == null || current.GetInstanceID() != sourceInstance ||
+                    var currentBinding = AppearanceSession.TentBinding;
+                    if (!AppearanceSession.Enabled || current == null || current.GetInstanceID() != sourceInstance ||
                         BindingKey(currentBinding) != bindingKey || ActualTentId(BazaarMyShopClosed.BM) != actualId)
                     { Restore("closed request superseded"); return; }
-                    if (!ok || prefab == null || !SlotRuntime.StaticVisualTree(prefab))
+                    if (!ok || prefab == null || !SlotAppearance.StaticVisualTree(prefab))
                     {
                         Restore("closed target load failed");
                         Plugin.Warn("ClosedTentRejected", new { reason = "target load failed or hierarchy unsupported", actualId, visualId });
@@ -232,6 +232,9 @@ internal static class ClosedTentProbe
     nameof(BazaarMyShopClosed.PartsObject.__c__DisplayClass4_0._LoadParts_b__0))]
 internal static class ClosedTentModelReady
 {
-    static void Postfix(BazaarMyShopClosed.PartsObject.__c__DisplayClass4_0 __instance) =>
+    static void Postfix(BazaarMyShopClosed.PartsObject.__c__DisplayClass4_0 __instance)
+    {
         Plugin.Guard("closed-tent-model-ready", () => ClosedTentProbe.OnModelLoaded(__instance.__4__this));
+        Plugin.Guard("closed-shelf-model-ready", () => ClosedShelfProbe.OnModelLoaded(__instance.__4__this));
+    }
 }
