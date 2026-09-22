@@ -16,6 +16,7 @@ internal static class UiTextIds
     internal const uint PresetSaveCompletedTextId = 0xBD70000F;
     internal const uint PresetLoadCompletedTextId = 0xBD700010;
     internal const uint AppearanceExitConfirmTextId = 0xBD700014;
+    internal const uint SaveFailedTextId = 0xBD700015;
     internal const uint StockApplyAndReturnChoiceTextId = 1110;
     internal const uint StockDiscardAndReturnChoiceTextId = 1120;
     internal const uint StockCancelChoiceTextId = 1010;

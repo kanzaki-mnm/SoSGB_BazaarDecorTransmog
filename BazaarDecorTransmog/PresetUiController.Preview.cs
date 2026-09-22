@@ -164,6 +164,16 @@ internal static partial class PresetUiController
                 }
                 rows[i].gameObject.SetActive(true);
             }
+            // Show the saved behavior, not the item Actual happens to resolve to
+            // today. Reuse the editor's cached artwork and localized label.
+            var usesActual = savingSlot ? AppearanceSession.UsesActualAppearance(category, slotIndex) :
+                AppearanceSession.UiSlotUsesActualAppearance(uiSlot, category, slotIndex);
+            if (usesActual)
+            {
+                rows[i].partsName.text = Localization.Get("actual.title");
+                rows[i].partsIcon.sprite = AppearanceEditorUi.ActualAppearanceBadgeSprite();
+                rows[i].partsIcon.enabled = rows[i].partsIcon.sprite != null;
+            }
         }
     }
 

@@ -45,6 +45,7 @@ internal static class AppearanceEditorUi
     private static Il2CppSystem.Action<int> exitChoiceCallback;
     private static Il2CppSystem.Action leaveAfterDialog;
     private static Il2CppSystem.Action restorePoseAfterDialog;
+    private static Il2CppSystem.Action saveFailureAfterDialog;
     private static Il2CppSystem.Action transitionAtBlack, transitionFinished;
     private const float ModeTransitionFadeSpeed = 0.20f;
     private static Sprite actualAppearanceBadgeSprite;
@@ -183,7 +184,15 @@ internal static class AppearanceEditorUi
             else EndExitPosePreservation();
             return;
         }
-        if (leave)
+        if (index == 0 && !leave)
+        {
+            saveFailureAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(
+                (Action)(() => Plugin.Guard("appearance-save-failure",
+                    () => PresetUiController.ShowSaveFailure(RestoreExitPoseAndEndPreservation), Abort)));
+            // Keep pose preservation until the notification closes as well.
+            manager.CloseDialog(null, saveFailureAfterDialog, true, true, false);
+        }
+        else if (leave)
         {
             leaveAfterDialog ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(
                 (Action)(() => Plugin.Guard("appearance-exit-after", FinishAppearanceSessionAndLeave, Abort)));
@@ -862,7 +871,7 @@ internal static class AppearanceEditorUi
         badge.gameObject.SetActive(true);
     }
 
-    private static Sprite ActualAppearanceBadgeSprite()
+    internal static Sprite ActualAppearanceBadgeSprite()
     {
         if (actualAppearanceBadgeSprite != null) return actualAppearanceBadgeSprite;
         const string resource = "BazaarDecorTransmog.Assets.actual_appearance_icon.rgba";
@@ -1171,6 +1180,11 @@ internal static class AppearanceEditorUi
     internal static uint CurrentPresetsGuideTextId => PresetsGuideTextId;
     internal static bool TryGetGuideText(uint textId, out string text)
     {
+        if (textId == SaveFailedTextId)
+        {
+            text = PresetUiController.SaveFailureText;
+            return true;
+        }
         if (PresetUiController.TryGetNameText(textId, out text)) return true;
         if (PresetUiController.TryGetDeleteText(textId, out text)) return true;
         if (textId == AppearanceGuideTextId)

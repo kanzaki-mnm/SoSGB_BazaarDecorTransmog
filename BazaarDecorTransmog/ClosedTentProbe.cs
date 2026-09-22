@@ -119,6 +119,9 @@ internal static class ClosedTentProbe
                 Visual.transform.localPosition = model.transform.localPosition;
                 Visual.transform.localRotation = prefab.transform.localRotation;
                 Visual.transform.localScale = prefab.transform.localScale;
+                // The stock tent owns collision. The additional appearance must
+                // never add the replacement prefab's own collision surfaces.
+                foreach (var collider in Visual.GetComponentsInChildren<Collider>(true)) collider.enabled = false;
                 Visual.SetActive(true);
                 int renderers = 0;
                 foreach (var renderer in Visual.GetComponentsInChildren<MeshRenderer>(true))

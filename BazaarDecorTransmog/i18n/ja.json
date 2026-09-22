@@ -12,8 +12,9 @@
   "presets.delete.completed": "削除が完了しました。",
   "presets.delete.guide": "削除",
   "presets.delete.confirm": "プリセット「{0}」を削除しますか？",
-  "actual.title": "実効果のみためを使う",
-  "actual.caption": "実効果オブジェのみためを表示します。",
+  "actual.title": "現在のオブジェのみためを使う",
+  "actual.caption": "現在設定されているオブジェのみために追従します。",
   "hidden.title": "表示しない",
-  "hidden.caption": "この場所のオブジェを表示しません。"
+  "hidden.caption": "この場所には何も表示しません。",
+  "save.failed": "保存できませんでした。詳しくはログをご確認ください。"
 }

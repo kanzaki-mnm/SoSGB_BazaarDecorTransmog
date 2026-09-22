@@ -369,6 +369,17 @@ internal static class AppearanceSession
         return SlotAppearance.ResolveVisual(binding, category);
     }
 
+    internal static bool UiSlotUsesActualAppearance(int uiIndex, BazaarCustomItemData.PartsCategory category, int index)
+    {
+        var preset = UiSlotPreset(uiIndex);
+        var runtime = RuntimeIndex(category, index);
+        // An empty save slot has no settings to preview; omitted bindings in an
+        // existing preset, however, intentionally mean Actual.
+        if (preset == null || runtime < 0 || runtime >= slots.Length) return false;
+        var binding = preset.Slots.FirstOrDefault(s => Matches(s, runtime));
+        return binding == null || binding.IsActual || binding.IsHidden && !AllowsHidden(category);
+    }
+
     internal static bool LoadUiSlot(int index)
     {
         if (!Enabled || storageBlocked || draft == null) return false;

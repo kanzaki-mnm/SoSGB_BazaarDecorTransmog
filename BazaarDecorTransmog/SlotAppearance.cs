@@ -24,6 +24,7 @@ internal sealed class SlotAppearance
         pending = false;
         focusAfterVisualId = 0;
         binding = value;
+        missingVisualIdentity = false;
         attemptedInstance = 0;
         attemptedVisualId = 0;
         // Keep the current replacement visible while another replacement is loading. This
@@ -68,6 +69,7 @@ internal sealed class SlotAppearance
     private int generation, attemptedInstance;
     private uint attemptedVisualId;
     private bool pending;
+    private bool missingVisualIdentity;
     private float nextCheck;
     private float requestStarted;
 
@@ -257,6 +259,9 @@ internal sealed class SlotAppearance
             if (applied != null || pending) Suspend();
             return;
         }
+        // A loaded master cannot resolve this binding. Keep vanilla visible and
+        // retry only when the appearance changes (Bind) or the Mod restarts.
+        if (missingVisualIdentity) return;
         if (pending && Time.unscaledTime - requestStarted > 20f)
         {
             generation++;
@@ -287,7 +292,16 @@ internal sealed class SlotAppearance
             return;
         }
         uint resolved = ResolveVisual();
-        if (resolved == 0) { Reject("Visual identity missing or ambiguous"); return; }
+        if (resolved == 0)
+        {
+            // Master initialization is temporary, not evidence of invalid data.
+            var parts = BokuMono.API.Bazaar.MDM?.CustomPartsMaster?.list;
+            if (parts == null || parts.Count == 0) return;
+            Restore("visual identity unavailable");
+            missingVisualIdentity = true;
+            Reject("Visual identity missing or ambiguous");
+            return;
+        }
         if ((applied == model && appliedVisualId == resolved) || pending ||
             (attemptedInstance == model.GetInstanceID() && attemptedVisualId == resolved)) return;
         if (manager.customData == null || manager.buffParam?.CustomPartsBuff == null) return;

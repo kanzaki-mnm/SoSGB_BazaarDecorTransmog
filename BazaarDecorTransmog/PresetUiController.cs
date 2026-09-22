@@ -62,6 +62,7 @@ internal static partial class PresetUiController
     private static bool failed;
     private static bool failureClosePending;
     private static Il2CppSystem.Action failureClosedCallback;
+    private static Action notificationAfterClose;
 
     private static Il2CppSystem.Action SessionCallback(Action action)
     {
@@ -85,7 +86,8 @@ internal static partial class PresetUiController
 
     internal static bool OwnsCompletion(UIDefaultDialog dialog) => completionDialogOpen &&
         dialog != null && dialog.infoId == (activeCompletion == CompletionMessage.Save ? PresetSaveCompletedTextId :
-            activeCompletion == CompletionMessage.Load ? PresetLoadCompletedTextId : DeleteCompletedTextId);
+            activeCompletion == CompletionMessage.Load ? PresetLoadCompletedTextId :
+            activeCompletion == CompletionMessage.SaveFailed ? SaveFailedTextId : DeleteCompletedTextId);
 
     private static bool HasChoiceId(UIDialog dialog, uint id) =>
         dialog.GetComponentsInChildren<UIDialogChoiceBar>(true).Any(bar =>
@@ -106,7 +108,7 @@ internal static partial class PresetUiController
             var message = dialog.TryCast<UIDefaultDialog>();
             bool owned = message != null && (message.infoId == PresetSaveCompletedTextId ||
                 message.infoId == PresetLoadCompletedTextId || message.infoId == DeleteCompletedTextId ||
-                message.infoId == DeleteConfirmTextId ||
+                message.infoId == DeleteConfirmTextId || message.infoId == SaveFailedTextId ||
                 !AppearanceSession.Enabled && message.infoId == AppearanceExitConfirmTextId);
             if (!owned && dialog.TryCast<UISelectDialog>() != null)
                 owned = HasChoiceId(dialog, PresetSaveTextId) || HasChoiceId(dialog, PresetEmptySlotTextId);
@@ -136,10 +138,20 @@ internal static partial class PresetUiController
         None,
         Save,
         Load,
-        Delete
+        Delete,
+        SaveFailed
     }
 
     internal static HeaderMode CurrentHeaderMode => headerMode;
+
+    internal static void ShowSaveFailure(Action afterClose)
+    {
+        if (failed || !AppearanceSession.Enabled) { afterClose?.Invoke(); return; }
+        notificationAfterClose = afterClose;
+        presetUiOpen = true;
+        pendingCompletion = CompletionMessage.SaveFailed;
+        OpenCompletionDialog();
+    }
 
     internal static void Open()
     {
@@ -433,15 +445,12 @@ internal static partial class PresetUiController
         {
             var deleted = false;
             Plugin.Guard("preset-ui-delete", () => deleted = AppearanceSession.DeleteUiSlot(slot));
-            if (deleted)
+            if (!failed && AppearanceSession.Enabled)
             {
-                pendingCompletion = CompletionMessage.Delete;
+                pendingCompletion = deleted ? CompletionMessage.Delete : CompletionMessage.SaveFailed;
                 reopenSlotsAfterCompletion ??= SessionCallback(OpenSlotMenu);
                 completionAfterClose = reopenSlotsAfterCompletion;
             }
-        }
-        else
-        {
         }
 
         var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
@@ -450,7 +459,7 @@ internal static partial class PresetUiController
             EndPresetUi();
             return;
         }
-        if (pendingCompletion == CompletionMessage.Delete)
+        if (pendingCompletion == CompletionMessage.Delete || pendingCompletion == CompletionMessage.SaveFailed)
         {
             openCompletionAfterDeleteDialog ??= SessionCallback(OpenCompletionDialog);
             manager.CloseDialog(null, openCompletionAfterDeleteDialog, true, true, false);
@@ -555,6 +564,12 @@ internal static partial class PresetUiController
                 pendingCompletion = CompletionMessage.Save;
                 finishPresetAfterName = true;
             }
+            else if (!failed && AppearanceSession.Enabled)
+            {
+                // Wait for the keyboard UI to close just as on successful save.
+                pendingCompletion = CompletionMessage.SaveFailed;
+                finishPresetAfterName = true;
+            }
             else EndPresetUi();
         }
         else if (result == KeyboardManager.Result.Cancel)
@@ -610,7 +625,8 @@ internal static partial class PresetUiController
         }
 
         var textId = completion == CompletionMessage.Save ? PresetSaveCompletedTextId :
-            completion == CompletionMessage.Load ? PresetLoadCompletedTextId : DeleteCompletedTextId;
+            completion == CompletionMessage.Load ? PresetLoadCompletedTextId :
+            completion == CompletionMessage.SaveFailed ? SaveFailedTextId : DeleteCompletedTextId;
         activeCompletion = completion;
         completionDialogOpen = true;
         completionDialogSeen = false;
@@ -669,7 +685,7 @@ internal static partial class PresetUiController
     private static void ApplyCompletionText(UIDefaultDialog completionDialog)
     {
         if (completionDialog == null || activeCompletion == CompletionMessage.None) return;
-        var text = Localization.Get(activeCompletion == CompletionMessage.Save
+        var text = activeCompletion == CompletionMessage.SaveFailed ? SaveFailureText : Localization.Get(activeCompletion == CompletionMessage.Save
             ? "presets.save.completed"
             : activeCompletion == CompletionMessage.Load
                 ? "presets.load.completed"
@@ -703,6 +719,8 @@ internal static partial class PresetUiController
 
     private static void EndPresetUi()
     {
+        var afterClose = notificationAfterClose;
+        notificationAfterClose = null;
         sessionGeneration++;
         slotMenuOpen = nameInputOpen = finishPresetAfterName = returnToSaveSlots = nameFooterRequested = false;
         selectedSlot = -1;
@@ -725,8 +743,13 @@ internal static partial class PresetUiController
         deleteTargetName = null;
         presetUiOpen = false;
         Recovery.Run(() => RemoveObjectPreview(), RestoreClosedSlotDialogPosition,
-            () => SetHeaderMode(HeaderMode.None), AppearanceEditorUi.RefreshFooterForPresetState);
+            () => SetHeaderMode(HeaderMode.None), AppearanceEditorUi.RefreshFooterForPresetState,
+            () => afterClose?.Invoke());
     }
+
+    internal static string SaveFailureText => Localization.GetOrFallback("save.failed",
+        "保存できませんでした。詳しくはログをご確認ください。",
+        "Could not save. Please check the log for details.");
 
     private static void SetHeaderMode(HeaderMode value)
     {
