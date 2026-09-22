@@ -19,6 +19,33 @@ Check("cross-category rejected", 0, new[] { new VisualIdentity.Part(10, "Shelf",
 var duplicates = new[] { new VisualIdentity.Part(10, "OrnamentS", "a"), new VisualIdentity.Part(20, "OrnamentS", "a") };
 Check("ambiguous migration rejected", 0, duplicates, 99, "a");
 Check("exact ID disambiguates duplicate models", 20, duplicates, 20, "a");
+// Compare the streaming resolver with the previous rule across reused IDs,
+// duplicate rows, category boundaries and every ordering of three master rows.
+var identityCases = new[]
+{
+    new VisualIdentity.Part(10, "OrnamentS", "a"),
+    new VisualIdentity.Part(20, "OrnamentS", "a"),
+    new VisualIdentity.Part(10, "OrnamentS", "b"),
+    new VisualIdentity.Part(10, "Shelf", "a"),
+    new VisualIdentity.Part(20, "Shelf", "b"),
+    new VisualIdentity.Part(0, "OrnamentS", "a")
+};
+foreach (var firstRow in identityCases)
+foreach (var secondRow in identityCases)
+foreach (var thirdRow in identityCases)
+foreach (var category in new[] { "OrnamentS", "Shelf" })
+foreach (var model in new[] { "a", "b", "", "missing" })
+foreach (var savedId in new uint[] { 0, 10, 20, 99 })
+{
+    var rows = new[] { firstRow, secondRow, thirdRow };
+    var matches = rows.Where(row => row.Category == category && row.Model == model).ToArray();
+    uint expected = string.IsNullOrWhiteSpace(model) ? 0 :
+        matches.Any(row => row.Id == savedId) ? savedId : matches.Length == 1 ? matches[0].Id : 0;
+    if (VisualIdentity.Resolve(rows, savedId, category, model) != expected)
+        throw new Exception("streaming identity resolver changed a legacy match result");
+}
+passed++;
+Console.WriteLine("PASS streaming identity parity across 6912 master/query combinations");
 if (args.Length > 0)
 {
     using var catalog = JsonDocument.Parse(File.ReadAllText(args[0]).TrimStart('\uFEFF'));
@@ -31,7 +58,6 @@ if (args.Length > 0)
     Check("real shelf identity", 119051, rows, 119051, "fld_cst_019_02", "Shelf");
     Check("real shelf simulated ID migration", 119051, rows, 999999, "fld_cst_019_02", "Shelf");
 }
-Console.WriteLine($"{passed} checks passed.");
 
 void Assert(bool condition, string name)
 {
@@ -65,9 +91,11 @@ try
     PresetStorage.Save(path, loaded);
     Assert(File.ReadAllText(path + ".bak") == first, "previous valid file backed up");
     Assert(PresetStorage.Load(path).Presets[0].Slots.Count == 3, "overwrite and reload");
-    var invalid = new PresetFile { SchemaVersion = 6, Presets = new() { original } };
+    var invalid = new PresetFile { Presets = new() { new VisualPreset { Name = "" } } };
     string valid = File.ReadAllText(path);
-    try { PresetStorage.Save(path, invalid); } catch (InvalidDataException) { }
+    bool saveRejected = false;
+    try { PresetStorage.Save(path, invalid); } catch (InvalidDataException) { saveRejected = true; }
+    Assert(saveRejected, "invalid save throws");
     Assert(File.ReadAllText(path) == valid, "invalid save preserves existing file");
     var mixed = original.Copy();
     mixed.Slots.Add(new VisualSlot { Category = "Tent", Index = 0, ItemId = 119025, ModelName = "fld_cst_009_02" });
@@ -106,15 +134,19 @@ try
     File.WriteAllText(path, JsonSerializer.Serialize(new PresetFile { SchemaVersion = 1, Presets = new() { original } }));
     string legacy = File.ReadAllText(path);
     var migrated = PresetStorage.Load(path);
-    Assert(migrated.SchemaVersion == 5 && migrated.Presets[0].Slots.Count == 4 && File.ReadAllText(path) == legacy, "legacy preset loads without modifying file");
+    Assert(migrated.SchemaVersion == 9 && migrated.Presets[0].Slots.Count == 4 && File.ReadAllText(path) == legacy, "legacy preset loads without modifying file");
     PresetStorage.Save(path, migrated);
     Assert(File.ReadAllText(path + ".bak") == legacy, "migration preserves legacy backup");
     File.WriteAllText(path, "{broken");
+    Assert(PresetStorage.Load(path).Presets[0].Slots.Count == 4 && File.ReadAllText(path) == "{broken",
+        "malformed primary recovers external backup without modifying primary");
+    File.Delete(path + ".bak");
     bool rejected = false;
     try { PresetStorage.Load(path); } catch (JsonException) { rejected = true; }
     Assert(rejected && File.ReadAllText(path) == "{broken", "malformed file rejected without modification");
-    Reject(invalid, "future schema rejected");
-    Reject(new PresetFile { Presets = new() { original, original.Copy() } }, "duplicate names rejected");
+    Reject(new PresetFile { SchemaVersion = 10, Presets = new() { original } }, "future schema rejected by validator");
+    PresetStorage.Validate(new PresetFile { Presets = new() { original, original.Copy() } });
+    Assert(true, "duplicate names allowed");
     var duplicateSlot = original.Copy(); duplicateSlot.Slots.Add(duplicateSlot.Slots[0]);
     Reject(new PresetFile { Presets = new() { duplicateSlot } }, "duplicate slot rejected");
     var wrongCategory = original.Copy(); wrongCategory.Slots[0].Category = "Unknown";
@@ -128,6 +160,7 @@ try
         new VisualSlot { Category = "Tent", Index = 0, Mode = "Actual" },
         new VisualSlot { Category = "Shelf", Index = 1, Mode = "Hidden" }
     }};
+    File.Delete(path); // A corrupt file is never silently overwritten by Save.
     PresetStorage.Save(path, new PresetFile { Presets = new() { displayModes } });
     var displayModesLoaded = PresetStorage.Load(path);
     Assert(displayModesLoaded.Presets[0].Slots[0].IsActual && displayModesLoaded.Presets[0].Slots[1].IsHidden,
@@ -140,4 +173,5 @@ finally
     foreach (string file in new[] { path, path + ".bak", path + ".tmp" }) if (File.Exists(file)) File.Delete(file);
     Directory.Delete(directory, false);
 }
+passed += StorageChecks.Run();
 Console.WriteLine($"Total: {passed} checks passed.");

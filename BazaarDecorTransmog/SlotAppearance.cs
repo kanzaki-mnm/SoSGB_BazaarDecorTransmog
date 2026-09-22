@@ -9,24 +9,23 @@ using UObject = UnityEngine.Object;
 
 namespace BazaarDecorTransmog;
 
-internal sealed class SlotRuntime
+internal sealed class SlotAppearance
 {
-    private bool Enabled => Prototype.Enabled;
+    private bool Enabled => AppearanceSession.Enabled;
     private readonly int slot;
     internal readonly Category PartCategory;
     internal int Index => slot;
     private VisualSlot binding;
-    internal string Actual => actual;
-    internal string Visual => visual;
-    internal string Status => status;
-    internal SlotRuntime(int index, Category category = Category.OrnamentS) { slot = index; PartCategory = category; }
+    internal SlotAppearance(int index, Category category = Category.OrnamentS) { slot = index; PartCategory = category; }
     internal void Bind(VisualSlot value)
     {
         if (SameBinding(binding, value)) return;
         generation++;
         pending = false;
+        decisionFeedbackPending = false;
         focusAfterVisualId = 0;
         binding = value;
+        missingVisualIdentity = false;
         attemptedInstance = 0;
         attemptedVisualId = 0;
         // Keep the current replacement visible while another replacement is loading. This
@@ -54,15 +53,15 @@ internal sealed class SlotRuntime
     private Transform liftedTransform;
     private Vector3 liftedBasePosition;
     private Vector3 liftAnimationFrom, liftAnimationTo;
-    private float liftAnimationStarted;
+    private float liftAnimationElapsed;
+    private int liftAnimationFrame;
     private bool liftAnimating, clearLiftAfterAnimation;
     private const float FocusLift = 0.45f;
     private const float EditorFocusLift = 0.5f;
     private const float FocusLiftDuration = 0.14f;
+    private const float MaxFocusAnimationStep = 1f / 30f;
     private const float DecisionDropDuration = 0.10f;
-    private bool nativeEditorFocusRaised;
     private Transform editorFocusSource;
-    private Vector3 editorGroundPosition;
     private float editorGroundWorldY;
     private float nativeTransitionOverrideUntil;
     private Transform decisionSettleSource;
@@ -71,9 +70,9 @@ internal sealed class SlotRuntime
     private int generation, attemptedInstance;
     private uint attemptedVisualId;
     private bool pending;
+    private bool missingVisualIdentity;
     private float nextCheck;
     private float requestStarted;
-    private string status = "Waiting for bazaar", actual = "-", visual = "-";
 
     internal void Observe(BazaarMyShop instance)
     {
@@ -112,6 +111,7 @@ internal sealed class SlotRuntime
 
     internal void SetFocused(bool value)
     {
+        decisionFeedbackPending = false;
         focused = value;
         if (!value)
         {
@@ -126,6 +126,7 @@ internal sealed class SlotRuntime
 
     internal void SetEditorPoseImmediate(bool hovered)
     {
+        decisionFeedbackPending = false;
         focused = hovered;
         focusAfterVisualId = 0;
         nativeTransitionOverrideUntil = 0f;
@@ -154,6 +155,7 @@ internal sealed class SlotRuntime
 
     internal void SetFocusedAfterVisual(uint visualId)
     {
+        decisionFeedbackPending = false;
         // While browsing, the slot is already hovering. Keep that height through the
         // visual swap; only a model that was grounded by a decision should lift after
         // the incoming appearance has replaced it.
@@ -178,7 +180,6 @@ internal sealed class SlotRuntime
     internal void BeginEditorFocus(bool nativeRaised)
     {
         RestoreFocusOffsetImmediate();
-        nativeEditorFocusRaised = nativeRaised;
         editorFocusSource = null;
         CaptureEditorGroundPosition();
         if (nativeRaised && editorFocusSource != null &&
@@ -202,48 +203,25 @@ internal sealed class SlotRuntime
         // raised, grounded, or mid-animation when appearance mode is entered; its current
         // height is therefore never a reliable baseline.
         editorGroundWorldY = 0f;
-        editorGroundPosition = EditorPositionAtHeight(source, 0f);
-        Plugin.Emit("EditorFocusBaseline", new
-        {
-            category = PartCategory.ToString(), slot,
-            nativeRaised = nativeEditorFocusRaised,
-            localY = source.localPosition.y,
-            groundY = editorGroundPosition.y,
-            worldY = source.position.y,
-            groundWorldY = editorGroundWorldY
-        });
-        nativeEditorFocusRaised = false;
     }
 
-    internal void PlayDecisionFeedback()
+    internal void PlayDecisionFeedback(bool includeActual = false)
     {
         focusAfterVisualId = 0;
         focused = false;
         nativeTransitionOverrideUntil = 0f;
-        if (binding == null || !binding.IsReplacement)
+        bool followsActual = binding == null || binding.IsActual ||
+            binding.IsHidden && !AppearanceSession.AllowsHidden(PartCategory);
+        if (missingVisualIdentity || !(binding?.IsReplacement == true || includeActual && followsActual))
         {
-            // Actual/Hidden have no replacement to animate. Leaving this pending caused
-            // the next ordinary item hovered to play a delayed, unintended landing.
+            // Individual Actual/Hidden selection keeps its existing behavior. Preset
+            // loads may animate visible native roots, but never hidden geometry.
             decisionFeedbackPending = false;
             decisionSettleSource = null;
             RestoreFocusOffsetImmediate();
             return;
         }
-        if (Prototype.EditorPreview && editorFocusSource != null)
-        {
-            // The stock decision animation must receive the raised model root. Resetting
-            // it first made the visual snap to the floor and left the game's animation
-            // completion path waiting for a drop that never happened.
-            liftedTransform = null;
-            liftAnimating = false;
-            clearLiftAfterAnimation = false;
-            // A second confirm starts from the same hover height as the first one.
-            editorFocusSource.localPosition = EditorPositionAtHeight(editorFocusSource, EditorFocusLift);
-            decisionSettleSource = editorFocusSource;
-            decisionDropStarted = Time.unscaledTime;
-            decisionDropInitialLift = EditorFocusLift;
-        }
-        else RestoreFocusOffsetImmediate();
+        RestoreFocusOffsetImmediate();
         decisionFeedbackPending = true;
         TryPlayDecisionFeedback();
     }
@@ -254,32 +232,31 @@ internal sealed class SlotRuntime
         UpdateFocusAnimation();
         // New field roots can arrive between two periodic checks. Check an unbound source
         // every frame so its native renderer is masked before the next rendered frame.
-        if (!immediate && Time.unscaledTime < nextCheck && (applied != null || pending || !Prototype.Enabled)) return;
+        if (!immediate && Time.unscaledTime < nextCheck && (applied != null || pending || !AppearanceSession.Enabled)) return;
         nextCheck = Time.unscaledTime + 0.5f;
-        // Information must remain available even while disabled or editing.
-        if (shop != null) Plugin.Guard("transmog-labels:" + slot, RefreshLabels);
-        if (!Prototype.Enabled || shop == null || binding == null)
+        if (!AppearanceSession.Enabled || shop == null || binding == null)
         {
             if (applied != null || pending || visualObject != null) Restore("disabled or shop unloaded");
             attemptedInstance = 0;
             attemptedVisualId = 0;
-            status = binding == null ? "Vanilla appearance" : Prototype.Enabled ? "Waiting for bazaar" : "OFF - vanilla appearance";
             return;
         }
         var manager = shop.BM;
         if (manager == null) return;
-        if (manager.IsCustomMode && !Prototype.EditorPreview)
+        if (manager.IsCustomMode && !AppearanceSession.EditorPreview)
         {
             if (applied != null || pending) Suspend();
-            status = "Vanilla editor - transmog suspended";
             return;
         }
+        // A loaded master cannot resolve this binding. Keep vanilla visible and
+        // retry only when the appearance changes (Bind) or the Mod restarts.
+        if (missingVisualIdentity) return;
         if (pending && Time.unscaledTime - requestStarted > 20f)
         {
             generation++;
             pending = false;
             UnmaskSource();
-            Reject("Visual request timed out; toggle OFF/ON to retry");
+            Reject("Visual request timed out");
         }
         var model = CurrentModel();
         if (maskedSource != null && maskedSource != model) UnmaskSource();
@@ -289,27 +266,31 @@ internal sealed class SlotRuntime
             if (applied != null || pending) Restore("model inactive");
             attemptedInstance = 0;
             attemptedVisualId = 0;
-            status = "Waiting for active shop model";
             return;
         }
         if (applied != null && applied != model) Restore("model replaced");
-        if (binding.IsActual || binding.IsHidden && !Prototype.AllowsHidden(PartCategory))
+        if (binding.IsActual || binding.IsHidden && !AppearanceSession.AllowsHidden(PartCategory))
         {
             if (maskedSource != null) UnmaskSource();
-            status = "Actual / effects appearance";
-            visual = actual;
             return;
         }
         if (binding.IsHidden)
         {
             if (applied != null || visualObject != null) Restore("hidden appearance mode");
             MaskSource(model);
-            status = "Hidden appearance";
-            visual = "Hidden";
             return;
         }
         uint resolved = ResolveVisual();
-        if (resolved == 0) { Reject("Visual identity missing or ambiguous"); return; }
+        if (resolved == 0)
+        {
+            // Master initialization is temporary, not evidence of invalid data.
+            var parts = BokuMono.API.Bazaar.MDM?.CustomPartsMaster?.list;
+            if (parts == null || parts.Count == 0) return;
+            Restore("visual identity unavailable");
+            missingVisualIdentity = true;
+            Reject("Visual identity missing or ambiguous");
+            return;
+        }
         if ((applied == model && appliedVisualId == resolved) || pending ||
             (attemptedInstance == model.GetInstanceID() && attemptedVisualId == resolved)) return;
         if (manager.customData == null || manager.buffParam?.CustomPartsBuff == null) return;
@@ -320,22 +301,17 @@ internal sealed class SlotRuntime
         // Editor exit may return before its asynchronous model restoration finishes.
         if (model.name != actualPart.modelName && model.name != actualPart.modelName + "(Clone)")
         {
-            status = "Waiting for original slot model";
             return;
         }
         attemptedInstance = model.GetInstanceID();
         attemptedVisualId = resolved;
         var target = mdm.CustomPartsMaster.GetMasterData(resolved);
-        actual = ItemName(actualId);
-        visual = ItemName(resolved);
         if (actualId == 0) { Reject("Empty slot unsupported in prototype"); return; }
         if (!HasVisualGeometry(model)) { Reject("Actual model has no supported render geometry"); return; }
         if (!manager.IsCustomMode) MaskSource(model);
         pending = true;
         requestStarted = Time.unscaledTime;
-        status = "Loading visual...";
         int ticket = ++generation;
-        Plugin.Emit("TransmogRequest", new { category = PartCategory.ToString(), slot = slot, actualId, actual, visualId = resolved, visual, modelName = target.modelName });
         try
         {
             shop.RM.GetLoadCustomPartsModelData(target.modelName, (Il2CppSystem.Action<bool, GameObject>)((ok, prefab) =>
@@ -344,14 +320,14 @@ internal sealed class SlotRuntime
                 {
                     if (ticket != generation) return;
                     pending = false;
-                    if (!Prototype.Enabled || shop == null || (shop.BM.IsCustomMode && !Prototype.EditorPreview) || CurrentModel() != model || !model.activeInHierarchy ||
+                    if (!AppearanceSession.Enabled || shop == null || (shop.BM.IsCustomMode && !AppearanceSession.EditorPreview) || CurrentModel() != model || !model.activeInHierarchy ||
                         ActualId(shop.BM) != actualId) { UnmaskSource(); return; }
                     bool supported = ok && prefab != null &&
                         (PartCategory == Category.Shelf ? ShelfVisualRoot(prefab) : StaticVisualTree(prefab));
                     if (!supported) { UnmaskSource(); Reject("Visual load failed or unsupported hierarchy"); return; }
                     try { Apply(model, prefab, shop.BM, actualId, resolved); }
                     catch { UnmaskSource(); Reject("Apply failed; see DiagnosticError"); throw; }
-                });
+                }, () => Restore("visual callback failed"));
                 if (ticket == generation && pending) { pending = false; UnmaskSource(); Reject("Callback failed; see DiagnosticError"); }
             }), CacheLevel.Permanent);
         }
@@ -370,14 +346,16 @@ internal sealed class SlotRuntime
             maskedRenderers.Add((renderer, renderer.enabled));
             renderer.enabled = false;
         }
-        Plugin.Emit("FieldSourceMasked", new { category = PartCategory.ToString(), slot });
     }
 
     private void UnmaskSource()
     {
-        foreach (var (renderer, enabled) in maskedRenderers)
-            if (renderer != null) renderer.enabled = enabled;
-        maskedRenderers.Clear();
+        if (maskedRenderers.Count == 0) { maskedSource = null; return; }
+        Recovery.Run(maskedRenderers.ToArray().Select(original => (Action)(() =>
+        {
+            if (original.Renderer != null) original.Renderer.enabled = original.Enabled;
+            maskedRenderers.Remove(original);
+        })));
         maskedSource = null;
     }
 
@@ -395,36 +373,14 @@ internal sealed class SlotRuntime
         if (value == null || !value.IsReplacement) return 0;
         var parts = BokuMono.API.Bazaar.MDM?.CustomPartsMaster?.list;
         if (parts == null) return 0;
-        var identities = new List<VisualIdentity.Part>();
+        if (string.IsNullOrWhiteSpace(value.ModelName)) return 0;
+        var match = new VisualIdentity.Match(value.ItemId, value.ModelName);
         for (int i = 0; i < parts.Count; i++)
-            identities.Add(new(parts[i].Id, parts[i].Category.ToString(), parts[i].modelName));
-        return VisualIdentity.Resolve(identities, value.ItemId, category.ToString(), value.ModelName);
-    }
-
-    private void RefreshLabels()
-    {
-        actual = "Placement not ready";
-        visual = binding == null || binding.IsActual || binding.IsHidden && !Prototype.AllowsHidden(PartCategory)
-            ? "Actual / effects appearance" : binding.IsHidden ? "Hidden" :
-            "Unresolved: " + binding.ModelName + " (" + binding.ItemId + ")";
-        var mdm = BokuMono.API.Bazaar.MDM;
-        if (mdm?.ItemMaster == null) return;
-        uint resolved = ResolveVisual();
-        if (resolved != 0) visual = ItemName(resolved);
-        // Show committed placement normally, or the editable layout while editing.
-        // Hover-only models are never treated as the effective placement.
-        var groups = CurrentData(shop.BM)?.PutPartsDataDic;
-        if (groups == null) return;
-        for (int g = 0; g < groups.Count; g++)
         {
-            var group = groups[g];
-            if (group == null || group.Category != PartCategory || group.DataDic == null) continue;
-            if (slot >= group.DataDic.Count) { actual = "Slot unavailable"; return; }
-            uint id = group.DataDic[slot];
-            actual = id == 0 ? "Empty slot" : ItemName(id);
-            return;
+            var part = parts[i];
+            if (part.Category == category) match.Consider(part.Id, part.modelName);
         }
-        actual = "Slot unavailable";
+        return match.Result;
     }
 
     internal uint ActualVisualId() => shop?.BM == null ? 0 : ActualId(shop.BM);
@@ -443,12 +399,6 @@ internal sealed class SlotRuntime
                 return group.DataDic[slot];
         }
         return 0;
-    }
-
-    private string ItemName(uint id)
-    {
-        var master = BokuMono.API.Bazaar.MDM.ItemMaster;
-        return master.TryGetData(id, out var row) && row != null ? $"{row.ItemName} ({id})" : id.ToString();
     }
 
     internal static bool HasVisualGeometry(GameObject model)
@@ -552,7 +502,6 @@ internal sealed class SlotRuntime
         GameObject replacement = null;
         try
         {
-            Plugin.Emit("RenderBefore", new { original = RenderInfo(model), target = RenderInfo(prefab) });
             // Both objects passed the strict visual-only component check. Keep the original
             // mesh/renderer intact, including native batching and per-renderer properties.
             // Keep the replacement below the native slot transform. The stock editor's
@@ -582,13 +531,9 @@ internal sealed class SlotRuntime
             if (previous != null) { previous.SetActive(false); UObject.Destroy(previous); }
             if (focusAfterVisualId == visualId) { focusAfterVisualId = 0; focused = true; }
             ApplyFocusOffset();
-            Plugin.Emit("RenderAfter", new { original = RenderInfo(model), visual = RenderInfo(visualObject) });
             string after = Evidence(manager);
             bool unchanged = before == after;
-            Plugin.Emit("TransmogApplied", new { category = PartCategory.ToString(), actualId, visualId, slot = slot, editorPreview = manager.IsCustomMode, unchanged,
-                before = JsonSerializer.Deserialize<JsonElement>(before), after = JsonSerializer.Deserialize<JsonElement>(after) });
             if (!unchanged) { Restore("verification mismatch"); Reject("Verification failed; restored original"); return; }
-            status = "ON - placement / sampled effects unchanged";
             TryPlayDecisionFeedback();
         }
         catch
@@ -628,13 +573,7 @@ internal sealed class SlotRuntime
             ApplyFocusOffset();
             string after = Evidence(manager);
             bool unchanged = before == after;
-            Plugin.Emit("ShelfTransmogApplied", new { category = PartCategory.ToString(), actualId, visualId, slot,
-                editorPreview = manager.IsCustomMode, unchanged, sourceMesh = shelfMesh.name,
-                visualMesh = targetFilter.sharedMesh.name, sourceNode = sourceNode.name, visualNode = targetNode.name,
-                preservedChildRenderers = model.GetComponentsInChildren<Renderer>(true).Length - 1,
-                before = JsonSerializer.Deserialize<JsonElement>(before), after = JsonSerializer.Deserialize<JsonElement>(after) });
             if (!unchanged) { Restore("verification mismatch"); Reject("Verification failed; restored original"); return; }
-            status = "ON - shelf shell changed; products / effects unchanged";
             TryPlayDecisionFeedback();
         }
         catch
@@ -642,35 +581,6 @@ internal sealed class SlotRuntime
             if (!replacing) Restore("shelf apply failed");
             throw;
         }
-    }
-
-    private object Vector(Vector3 value) => new { x = value.x, y = value.y, z = value.z };
-
-    private object RenderInfo(GameObject model)
-    {
-        var nodes = new List<object>();
-        foreach (var node in model.GetComponentsInChildren<Transform>(true))
-            if (node.GetComponent<Renderer>() != null) nodes.Add(RenderNode(node.gameObject));
-        return new { name = model.name, rootPosition = Vector(model.transform.position),
-            rootScale = Vector(model.transform.localScale), nodes };
-    }
-
-    private object RenderNode(GameObject model)
-    {
-        var renderer = model.GetComponent<Renderer>();
-        var mesh = model.GetComponent<MeshFilter>()?.sharedMesh ?? model.GetComponent<SkinnedMeshRenderer>()?.sharedMesh;
-        var materials = new List<object>();
-        foreach (var material in renderer.sharedMaterials)
-            materials.Add(material == null ? null : new { name = material.name, shader = material.shader?.name, queue = material.renderQueue });
-        return new { name = model.name, active = model.activeInHierarchy, layer = model.layer,
-            position = Vector(model.transform.position), localPosition = Vector(model.transform.localPosition),
-            localScale = Vector(model.transform.localScale), worldScale = Vector(model.transform.lossyScale),
-            rotation = Vector(model.transform.localEulerAngles), enabled = renderer.enabled,
-            forcedOff = renderer.forceRenderingOff, batched = renderer.isPartOfStaticBatch,
-            mesh = mesh?.name, vertices = mesh?.vertexCount ?? 0, submeshes = mesh?.subMeshCount ?? 0,
-            meshCenter = mesh == null ? null : Vector(mesh.bounds.center),
-            meshSize = mesh == null ? null : Vector(mesh.bounds.size),
-            worldCenter = Vector(renderer.bounds.center), worldSize = Vector(renderer.bounds.size), materials };
     }
 
     private string Evidence(BazaarManager manager)
@@ -684,10 +594,17 @@ internal sealed class SlotRuntime
         var values = new List<object>();
         foreach (SeriesCategory series in Enum.GetValues<SeriesCategory>().Where(s => s != SeriesCategory.Max && s != SeriesCategory.All && s != SeriesCategory.None))
             foreach (ExtraSeriesCategory extra in Enum.GetValues<ExtraSeriesCategory>().Where(e => e != ExtraSeriesCategory.All))
-                values.Add(new { series = series.ToString(), extra = extra.ToString(),
-                    buy = buff.GetBuyCountValue(series, extra), price = buff.GetPriceValue(series, extra),
-                    happy = buff.GetHappyEnergyValue(series, extra), freshness = buff.GetFreshnessUpValue(series, extra),
-                    quality = buff.GetQualityUpValue(series, extra), gauge = buff.GetBonusGaugeValue(series, extra) });
+                values.Add(new
+                {
+                    series = series.ToString(),
+                    extra = extra.ToString(),
+                    buy = buff.GetBuyCountValue(series, extra),
+                    price = buff.GetPriceValue(series, extra),
+                    happy = buff.GetHappyEnergyValue(series, extra),
+                    freshness = buff.GetFreshnessUpValue(series, extra),
+                    quality = buff.GetQualityUpValue(series, extra),
+                    gauge = buff.GetBonusGaugeValue(series, extra)
+                });
         var passives = new List<uint>();
         var active = buff.m_ActivePassiveParam;
         for (int i = 0; i < active.Count; i++) passives.Add(active[i].Id);
@@ -700,41 +617,57 @@ internal sealed class SlotRuntime
             for (int g = 0; g < editGroups.Count; g++)
                 for (int i = 0; i < editGroups[g].DataDic.Count; i++)
                     edit.Add(new { category = editGroups[g].Category.ToString(), index = i, id = editGroups[g].DataDic[i] });
-        return JsonSerializer.Serialize(new { slots, edit, passives, seriesIds, values,
-            rich = buff.GetAddPopRichManValue(), trend = buff.GetUpgradeTrendValue() });
+        return JsonSerializer.Serialize(new
+        {
+            slots,
+            edit,
+            passives,
+            seriesIds,
+            values,
+            rich = buff.GetAddPopRichManValue(),
+            trend = buff.GetUpgradeTrendValue()
+        });
     }
 
     internal void Restore(string reason)
     {
-        if (decisionSettleSource != null)
-        {
-            try { decisionSettleSource.localPosition = EditorPositionAtHeight(decisionSettleSource, 0f); }
-            catch (Exception) { }
-            decisionSettleSource = null;
-        }
-        RestoreFocusOffsetImmediate();
-        UnmaskSource();
+        // Invalidate callbacks before any Unity access which can throw.
         generation++;
         pending = false;
         decisionFeedbackPending = false;
         focusAfterVisualId = 0;
-        foreach (var original in originalRenderers)
-            if (original.Renderer != null) original.Renderer.enabled = original.Enabled;
-        if (applied != null)
+        Recovery.Run(() =>
         {
-            Plugin.Emit("TransmogRestored", new { slot, reason });
-        }
-        originalRenderers.Clear();
-        if (shelfFilter != null && shelfMesh != null) shelfFilter.sharedMesh = shelfMesh;
-        if (shelfRenderer != null && shelfMaterials != null) shelfRenderer.sharedMaterials = shelfMaterials;
-        shelfFilter = null;
-        shelfRenderer = null;
-        shelfMesh = null;
-        shelfMaterials = null;
+            if (decisionSettleSource != null)
+            {
+                decisionSettleSource.localPosition = EditorPositionAtHeight(decisionSettleSource, 0f);
+                decisionSettleSource = null;
+            }
+        }, RestoreFocusOffsetImmediate, UnmaskSource,
+        () => Recovery.Run(originalRenderers.ToArray().Select(original => (Action)(() =>
+        {
+            if (original.Renderer != null) original.Renderer.enabled = original.Enabled;
+            originalRenderers.Remove(original);
+        }))), () =>
+        {
+            if (shelfFilter != null && shelfMesh != null) shelfFilter.sharedMesh = shelfMesh;
+            shelfFilter = null;
+            shelfMesh = null;
+        }, () =>
+        {
+            if (shelfRenderer != null && shelfMaterials != null) shelfRenderer.sharedMaterials = shelfMaterials;
+            shelfRenderer = null;
+            shelfMaterials = null;
+        }, () =>
+        {
+            if (visualObject != null) visualObject.SetActive(false);
+        }, () =>
+        {
+            if (visualObject != null) UObject.Destroy(visualObject);
+            visualObject = null;
+        });
         applied = null;
         appliedVisualId = 0;
-        if (visualObject != null) { visualObject.SetActive(false); UObject.Destroy(visualObject); }
-        visualObject = null;
     }
 
     private Transform FocusTransform()
@@ -752,15 +685,15 @@ internal sealed class SlotRuntime
             catch (Exception) { }
             decisionSettleSource = null;
         }
-        if (Prototype.EditorPreview) CaptureEditorGroundPosition();
+        if (AppearanceSession.EditorPreview) CaptureEditorGroundPosition();
         // Move the stock model root in the editor: the appearance is its child, so both
         // follow one hover height. The stock tab transition itself is suppressed because
         // it reloads the effect model for a frame before showing the next appearance.
-        var target = Prototype.EditorPreview ? editorFocusSource : FocusTransform();
+        var target = AppearanceSession.EditorPreview ? editorFocusSource : FocusTransform();
         if (target == null) return;
-        var ground = Prototype.EditorPreview ? EditorPositionAtHeight(target, 0f) : target.localPosition;
-        float height = Prototype.EditorPreview ? EditorFocusLift : FocusLift;
-        var hover = Prototype.EditorPreview ? EditorPositionAtHeight(target, height) : ground + Vector3.up * height;
+        var ground = AppearanceSession.EditorPreview ? EditorPositionAtHeight(target, 0f) : target.localPosition;
+        float height = AppearanceSession.EditorPreview ? EditorFocusLift : FocusLift;
+        var hover = AppearanceSession.EditorPreview ? EditorPositionAtHeight(target, height) : ground + Vector3.up * height;
         if (liftedTransform == target)
         {
             if (clearLiftAfterAnimation)
@@ -776,7 +709,7 @@ internal sealed class SlotRuntime
     private void AnimateFocusReturn()
     {
         if (liftedTransform == null) return;
-        StartFocusAnimation(Prototype.EditorPreview && liftedTransform == editorFocusSource
+        StartFocusAnimation(AppearanceSession.EditorPreview && liftedTransform == editorFocusSource
             ? EditorPositionAtHeight(liftedTransform, 0f) : liftedBasePosition, true);
     }
 
@@ -785,7 +718,8 @@ internal sealed class SlotRuntime
         if (liftedTransform == null) return;
         liftAnimationFrom = liftedTransform.localPosition;
         liftAnimationTo = destination;
-        liftAnimationStarted = Time.unscaledTime;
+        liftAnimationElapsed = 0f;
+        liftAnimationFrame = Time.frameCount;
         liftAnimating = true;
         clearLiftAfterAnimation = clearAfter;
     }
@@ -799,10 +733,16 @@ internal sealed class SlotRuntime
             clearLiftAfterAnimation = false;
             return;
         }
-        float progress = Mathf.Clamp01((Time.unscaledTime - liftAnimationStarted) / FocusLiftDuration);
+        // A first-use model/UI load can consume the whole hover duration before
+        // another frame is drawn. Do not count that stall as visible animation,
+        // or advance twice when an immediate slot check runs in the same frame.
+        if (liftAnimationFrame == Time.frameCount) return;
+        liftAnimationFrame = Time.frameCount;
+        liftAnimationElapsed += Mathf.Min(Time.unscaledDeltaTime, MaxFocusAnimationStep);
+        float progress = Mathf.Clamp01(liftAnimationElapsed / FocusLiftDuration);
         // SmoothStep gives the same soft acceleration/deceleration feel as the editor UI.
         float eased = progress * progress * (3f - 2f * progress);
-        if (Prototype.EditorPreview && liftedTransform == editorFocusSource)
+        if (AppearanceSession.EditorPreview && liftedTransform == editorFocusSource)
             liftAnimationTo = EditorPositionAtHeight(liftedTransform, clearLiftAfterAnimation ? 0f : EditorFocusLift);
         liftedTransform.localPosition = Vector3.Lerp(liftAnimationFrom, liftAnimationTo, eased);
         if (progress < 1f) return;
@@ -815,8 +755,11 @@ internal sealed class SlotRuntime
     private void RestoreFocusOffsetImmediate()
     {
         if (liftedTransform != null)
-            try { liftedTransform.localPosition = Prototype.EditorPreview && liftedTransform == editorFocusSource
-                ? EditorPositionAtHeight(liftedTransform, 0f) : liftedBasePosition; }
+            try
+            {
+                liftedTransform.localPosition = AppearanceSession.EditorPreview && liftedTransform == editorFocusSource
+                ? EditorPositionAtHeight(liftedTransform, 0f) : liftedBasePosition;
+            }
             catch (Exception) { }
         liftedTransform = null;
         liftAnimating = false;
@@ -853,54 +796,39 @@ internal sealed class SlotRuntime
 
     private void TryPlayDecisionFeedback()
     {
-        if (!decisionFeedbackPending || shop == null || applied == null ||
-            appliedVisualId != ResolveVisual()) return;
+        if (!decisionFeedbackPending || shop == null) return;
+        if (binding?.IsReplacement == true &&
+            (applied == null || applied != CurrentModel() || appliedVisualId != ResolveVisual())) return;
+        if (AppearanceSession.EditorPreview) CaptureEditorGroundPosition();
         // During editor preview the replacement is a child of the native model. Animate
         // that native root so the replacement follows the game's landing animation.
-        var target = Prototype.EditorPreview ? editorFocusSource : FocusTransform();
-        if (target == null) return;
+        var target = AppearanceSession.EditorPreview ? editorFocusSource : FocusTransform();
+        if (target == null || !target.gameObject.activeInHierarchy || ActualId(shop.BM) == 0) return;
         decisionFeedbackPending = false;
-        shop.PlayCustomAnim(PartCategory, slot, target);
-        Plugin.Emit("TransmogDecisionFeedback", new
+        // The same guard covers synchronous and resource-callback entry points; a
+        // failed cosmetic effect must not undo a successfully applied visual.
+        Plugin.Guard("slot-landing:" + PartCategory + ":" + slot, () =>
         {
-            category = PartCategory.ToString(),
-            index = slot,
-            visualId = appliedVisualId,
-            target = target.name,
-            route = "BazaarMyShop.PlayCustomAnim"
-        });
+            if (AppearanceSession.EditorPreview)
+            {
+                // Start the stock effect and absolute-height correction only after the
+                // incoming visual is ready. Starting the clock before an async load can
+                // finish the drop before the new model is ever visible.
+                liftedTransform = null;
+                liftAnimating = false;
+                clearLiftAfterAnimation = false;
+                target.localPosition = EditorPositionAtHeight(target, EditorFocusLift);
+                decisionSettleSource = target;
+                decisionDropStarted = Time.unscaledTime;
+                decisionDropInitialLift = EditorFocusLift;
+            }
+            shop.PlayCustomAnim(PartCategory, slot, target);
+        }, () => SetEditorPoseImmediate(false));
     }
 
     private void Reject(string reason)
     {
-        status = "Not applied: " + reason;
-        Plugin.Emit("TransmogSkipped", new { slot, reason });
+        Plugin.Warn("TransmogSkipped", new { slot, reason });
     }
 
 }
-
-public sealed class PrototypeDriver : MonoBehaviour
-{
-    public PrototypeDriver(IntPtr pointer) : base(pointer) { }
-    public void Update()
-    {
-        Plugin.Guard("transmog-update", Prototype.Tick);
-        Plugin.Guard("preset-ui-update", PresetUiProbe.Tick);
-    }
-    public void LateUpdate() => Plugin.Guard("transmog-decision-landing", Prototype.UpdateDecisionDrops);
-    public void OnGUI() => Plugin.Guard("transmog-panel", Prototype.Draw);
-    public void OnDestroy() => Plugin.Guard("transmog-cleanup", () => Prototype.Restore("driver destroyed"));
-}
-
-[HarmonyPatch(typeof(BazaarMyShop), nameof(BazaarMyShop.LoadBazaarPartsModel))]
-internal static class ObserveShop
-{
-    static void Prefix(BazaarMyShop __instance) => Plugin.Guard("observe-shop", () => Prototype.Observe(__instance));
-}
-
-[HarmonyPatch(typeof(BazaarManager), nameof(BazaarManager.OpenBazaarCustomMenu), new Type[] { })]
-internal static class BeforeEditing
-{
-    static void Prefix() => Plugin.Guard("before-editor", Prototype.Suspend);
-}
-

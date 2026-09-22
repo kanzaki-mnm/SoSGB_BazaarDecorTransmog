@@ -2,46 +2,10 @@ using System.Text.Json;
 
 namespace BazaarDecorTransmog;
 
-public sealed class VisualSlot
-{
-    public int Index { get; set; }
-    public uint ItemId { get; set; }
-    public string Category { get; set; } = "OrnamentS";
-    public string ModelName { get; set; } = "";
-    // Replacement is the original transmog behavior. Actual and Hidden intentionally
-    // carry no item identity: they are display choices, not catalogue entries.
-    public string Mode { get; set; } = "Replacement";
-    public bool IsReplacement => string.IsNullOrEmpty(Mode) || Mode == "Replacement";
-    public bool IsActual => Mode == "Actual";
-    public bool IsHidden => Mode == "Hidden";
-}
-
-public sealed class VisualPreset
-{
-    public string Name { get; set; } = "Default";
-    // Null is a legacy/debug-panel preset. The in-game menu owns slots 1-6.
-    public int? UiSlotIndex { get; set; }
-    public List<VisualSlot> Slots { get; set; } = new();
-    public VisualPreset Copy() => new() { Name = Name, UiSlotIndex = UiSlotIndex, Slots = Slots.Select(s => new VisualSlot
-        { Index = s.Index, ItemId = s.ItemId, Category = s.Category, ModelName = s.ModelName, Mode = s.Mode }).ToList() };
-}
-
-public sealed class PresetFile
-{
-    public int SchemaVersion { get; set; } = 9;
-    public VisualPreset CurrentAppearance { get; set; }
-    public List<VisualPreset> Presets { get; set; } = new();
-    public PresetSnapshot PreviousValidState { get; set; }
-}
-
-public sealed class PresetSnapshot
-{
-    public VisualPreset CurrentAppearance { get; set; }
-    public List<VisualPreset> Presets { get; set; } = new();
-}
-
 internal static class PresetStorage
 {
+    // The host owns logging so storage can also run without Unity/BepInEx.
+    internal static Action<string, object> Report { get; set; }
     internal const int UiSlotCount = 6;
 
     internal static void Validate(PresetFile data)
@@ -91,21 +55,40 @@ internal static class PresetStorage
     }
 
     internal static PresetFile Load(string path)
+        => LoadRecoverable(path, out _);
+
+    private static void ReportSafely(string kind, object data)
     {
+        // Diagnostics must never turn a successful read/commit into a failure.
+        try { Report?.Invoke(kind, data); } catch { }
+    }
+
+    private static void RejectFutureSchema(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind == JsonValueKind.Object &&
+            document.RootElement.TryGetProperty(nameof(PresetFile.SchemaVersion), out var schema) &&
+            schema.ValueKind == JsonValueKind.Number && schema.TryGetInt64(out long version) && version > 9)
+            throw new NotSupportedException("This appearance data was written by a newer Mod version.");
+    }
+
+    private static PresetFile LoadRecoverable(string path, out bool healthyPrimary)
+    {
+        healthyPrimary = false;
         try
         {
-            var primary = LoadFile(path);
-            Plugin.Emit("AppearanceDataLoaded", new { source = "primary", path });
+            var primary = LoadFile(path, out healthyPrimary);
+            ReportSafely("AppearanceDataLoaded", new { source = "primary", path });
             return primary;
         }
-        catch (Exception primaryError)
+        catch (Exception primaryError) when (primaryError is not NotSupportedException)
         {
             string backup = path + ".bak";
             if (!File.Exists(backup)) throw;
             try
             {
-                var recovered = LoadFile(backup);
-                Plugin.Emit("AppearanceDataRecovered", new
+                var recovered = LoadFile(backup, out _);
+                ReportSafely("AppearanceDataRecovered", new
                 {
                     source = "external-backup",
                     path = backup,
@@ -113,7 +96,7 @@ internal static class PresetStorage
                 });
                 return recovered;
             }
-            catch (Exception backupError)
+            catch (Exception backupError) when (backupError is not NotSupportedException)
             {
                 throw new InvalidDataException(
                     $"Primary and backup data are unreadable. Primary: {primaryError.Message}; Backup: {backupError.Message}",
@@ -122,46 +105,76 @@ internal static class PresetStorage
         }
     }
 
-    private static PresetFile LoadFile(string path)
+    private static PresetFile LoadFile(string path, out bool healthy)
     {
-        var data = JsonSerializer.Deserialize<PresetFile>(File.ReadAllText(path));
+        healthy = false;
+        string json = File.ReadAllText(path);
+        // Inspect the version before deserializing fields whose shape may have changed.
+        // A future schema is not corruption and must never fall back to older data.
+        RejectFutureSchema(json);
+        var data = JsonSerializer.Deserialize<PresetFile>(json);
         try { Validate(data); }
-        catch when (data?.PreviousValidState != null)
+        catch (InvalidDataException) when (data?.PreviousValidState != null && data.SchemaVersion >= 1)
         {
             var recovered = new PresetFile
             {
-                SchemaVersion = Math.Clamp(data.SchemaVersion, 5, 9),
+                SchemaVersion = data.SchemaVersion,
                 CurrentAppearance = data.PreviousValidState.CurrentAppearance?.Copy(),
                 Presets = data.PreviousValidState.Presets?.Select(p => p.Copy()).ToList()
             };
             Validate(recovered);
-            Plugin.Emit("AppearanceDataRecovered", new { source = "embedded-previous-state", path });
-            data = recovered;
+            ReportSafely("AppearanceDataRecovered", new { source = "embedded-previous-state", path });
+            recovered.SchemaVersion = 9;
+            return recovered;
         }
+        healthy = true;
         data.SchemaVersion = 9;
         return data;
     }
 
     internal static void Save(string path, PresetFile data)
     {
-        data.SchemaVersion = 9;
+        // Validate a detached candidate so failed saves do not advance in-memory
+        // schema/snapshot state. The caller commits its new state only on success.
+        var candidate = JsonSerializer.Deserialize<PresetFile>(JsonSerializer.Serialize(data));
+        Validate(candidate);
+        candidate.SchemaVersion = 9;
         PresetFile previous = null;
-        if (File.Exists(path))
-            try { previous = LoadFile(path); }
-            catch { }
-        data.PreviousValidState = previous == null ? null : new PresetSnapshot
+        bool healthyPrimary = false;
+        bool primaryExists = File.Exists(path);
+        if (primaryExists || File.Exists(path + ".bak"))
+            previous = LoadRecoverable(path, out healthyPrimary);
+        if (healthyPrimary && File.Exists(path + ".bak"))
+        {
+            // Rotating a backup is also a write: preserve a newer version there
+            // even when the primary happens to contain older, readable data.
+            try { RejectFutureSchema(File.ReadAllText(path + ".bak")); }
+            catch (JsonException) { } // A malformed old backup may be replaced.
+        }
+        candidate.PreviousValidState = previous == null ? null : new PresetSnapshot
         {
             CurrentAppearance = previous.CurrentAppearance?.Copy(),
             Presets = previous.Presets.Select(p => p.Copy()).ToList()
         };
-        Validate(data);
+        Validate(candidate);
         string temporary = path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true }));
-        // Verify the complete serialized file before it can replace either the
-        // primary data or the last known-good external backup.
-        var verification = JsonSerializer.Deserialize<PresetFile>(File.ReadAllText(temporary));
-        Validate(verification);
-        if (previous != null) File.Copy(path, path + ".bak", true);
-        File.Move(temporary, path, true);
+        try
+        {
+            File.WriteAllText(temporary, JsonSerializer.Serialize(candidate, new JsonSerializerOptions { WriteIndented = true }));
+            // Verify the complete serialized file before it can replace either the
+            // primary data or the last known-good external backup.
+            var verification = JsonSerializer.Deserialize<PresetFile>(File.ReadAllText(temporary));
+            Validate(verification);
+            // Replacement and backup creation are a single filesystem operation.
+            // Never rotate damaged primary bytes over a known-good recovery file.
+            if (primaryExists) File.Replace(temporary, path, healthyPrimary ? path + ".bak" : null);
+            else File.Move(temporary, path);
+            data.SchemaVersion = candidate.SchemaVersion;
+            data.PreviousValidState = candidate.PreviousValidState;
+        }
+        finally
+        {
+            try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
+        }
     }
 }
