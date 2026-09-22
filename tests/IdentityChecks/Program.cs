@@ -174,4 +174,44 @@ finally
     Directory.Delete(directory, false);
 }
 passed += StorageChecks.Run();
+var gate = new UiNotificationGate();
+long oldRequest = gate.Begin();
+long newRequest = gate.Begin();
+if (gate.Consume(oldRequest) || !gate.Consume(newRequest) || gate.Consume(newRequest))
+    throw new Exception("Stale or duplicate notification accepted");
+passed++;
+long cancelledRequest = gate.Begin();
+gate.Invalidate();
+if (gate.Consume(cancelledRequest)) throw new Exception("Retired notification accepted");
+passed++;
+var closing = new UiNotificationGate();
+long closingRequest = closing.Begin();
+long navigation = gate.Begin();
+gate.Invalidate();
+if (!closing.Consume(closingRequest) || closing.Pending || gate.Consume(navigation))
+    throw new Exception("Close must complete independently of retired navigation");
+passed++;
+long reentrantRequest = gate.Begin();
+int effects = 0;
+void Notify()
+{
+    if (!gate.Consume(reentrantRequest)) return;
+    effects++;
+    Notify();
+}
+Notify();
+if (effects != 1) throw new Exception("Reentrant side effect executed twice");
+passed++;
+long missingClose = closing.Begin();
+if (closing.RecoverClosed(missingClose, false, false) || closing.RecoverClosed(missingClose, true, false) ||
+    closing.RecoverClosed(missingClose, false, true) || !closing.Pending)
+    throw new Exception("An in-progress close was released early");
+passed++;
+if (!closing.RecoverClosed(missingClose, true, true) || closing.Consume(missingClose) || closing.Pending)
+    throw new Exception("Missing close notification did not recover exactly once");
+passed++;
+long laterClose = closing.Begin();
+if (closing.RecoverClosed(missingClose, true, true) || !closing.Pending || !closing.Consume(laterClose))
+    throw new Exception("Old close recovery interfered with a later close");
+passed++;
 Console.WriteLine($"Total: {passed} checks passed.");

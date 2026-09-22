@@ -34,6 +34,10 @@ internal static partial class PresetUiController
     private static Il2CppSystem.Action closePresetAfterDialog;
     private static KeyboardManager.InputCompleteCallback inputCallback;
     private static Il2CppSystem.Action inputCancelled;
+    private static long nameRequestVersion;
+    private static bool nameRequestPending;
+    private static KeyboardManager pendingNameChoiceCancel;
+    private static KeyboardManager nameRequestKeyboard;
     private static bool slotMenuOpen;
     private static bool deleteConfirmOpen;
     private static int deleteTargetSlot = -1;
@@ -60,26 +64,71 @@ internal static partial class PresetUiController
     private static HeaderMode headerMode;
     private static int sessionGeneration;
     private static bool failed;
-    private static bool failureClosePending;
     private static Il2CppSystem.Action failureClosedCallback;
     private static Action notificationAfterClose;
+    private static readonly UiNotificationGate choicesGate = new();
+    private static readonly UiNotificationGate closeGate = new();
+    private static Il2CppSystem.Action trackedCloseCallback;
+    private static UIManager closingManager;
+    private static UIDialog closingDialog;
+    private static long closingTicket;
+    private static bool closingTargetKnown;
+    private static bool closingCallFailed;
+
+    private static void TrackClosingTarget(UIManager manager, long ticket, UIDialog target = null)
+    {
+        closingManager = manager;
+        closingCallFailed = false;
+        closingTicket = ticket;
+        if (target == null && manager.DialogManager != null &&
+            manager.DialogManager.TryGetPage(manager.CurrentUIKey, out var page))
+            target = page?.TryCast<UIDialog>();
+        // The small completion dialog is not always registered in the page map.
+        if (target == null)
+            target = Resources.FindObjectsOfTypeAll<UIDefaultDialog>()
+                .LastOrDefault(item => OwnsCompletion(item) && item.gameObject.activeInHierarchy);
+        closingDialog = target;
+        closingTargetKnown = target != null;
+    }
+
+    private static void RecoverFinishedClose()
+    {
+        if (!closeGate.Pending || !closingCallFailed) return;
+        bool managerGone = closingManager == null;
+        bool targetEnded = managerGone || closingTargetKnown &&
+            (closingDialog == null || !closingDialog.gameObject.activeInHierarchy);
+        bool released = managerGone || !closingManager.IsDialog;
+        if (!closeGate.RecoverClosed(closingTicket, targetEnded, released)) return;
+        closingDialog = null;
+        closingManager = null;
+        closingTargetKnown = false;
+        // A missing notification is not proof that navigation is safe. Retire it
+        // and restore our UI state, leaving the already closed official UI alone.
+        Plugin.Warn("PresetCloseNotificationMissing", new { reason = "target ended and dialog history released" });
+        Abort();
+    }
 
     private static Il2CppSystem.Action SessionCallback(Action action)
     {
         int ticket = sessionGeneration;
+        bool consumed = false;
         return DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)(() =>
         {
-            if (ticket == sessionGeneration && !failed)
+            if (ticket == sessionGeneration && !failed && !consumed)
+            {
+                consumed = true;
                 Plugin.Guard("preset-callback", action, Abort);
+            }
         }));
     }
 
     private static Il2CppSystem.Action<int> SessionCallback(Action<int> action)
     {
         int ticket = sessionGeneration;
+        long request = choicesGate.Begin();
         return DelegateSupport.ConvertDelegate<Il2CppSystem.Action<int>>((Action<int>)(index =>
         {
-            if (ticket == sessionGeneration && !failed)
+            if (ticket == sessionGeneration && !failed && choicesGate.Consume(request))
                 Plugin.Guard("preset-choice", () => action(index), Abort);
         }));
     }
@@ -97,7 +146,7 @@ internal static partial class PresetUiController
 
     private static void CloseFailedDialog()
     {
-        if (failureClosePending) return;
+        if (closeGate.Pending) return;
         var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
         if (manager == null || !manager.IsDialog) return;
         // CloseDialog targets the current UI history entry. Check its key and
@@ -113,11 +162,16 @@ internal static partial class PresetUiController
             if (!owned && dialog.TryCast<UISelectDialog>() != null)
                 owned = HasChoiceId(dialog, PresetSaveTextId) || HasChoiceId(dialog, PresetEmptySlotTextId);
             if (!owned) continue;
-            failureClosedCallback ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(
-                (Action)(() => failureClosePending = false));
-            failureClosePending = true;
+            long close = closeGate.Begin();
+            try
+            {
+                TrackClosingTarget(manager, close, dialog);
+                failureClosedCallback = DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(
+                    (Action)(() => closeGate.Consume(close)));
+            }
+            catch { closeGate.Consume(close); throw; }
             try { manager.CloseDialog(null, failureClosedCallback, true, false, false); }
-            catch { failureClosePending = false; throw; }
+            catch { closingCallFailed = true; throw; }
             return;
         }
     }
@@ -125,6 +179,9 @@ internal static partial class PresetUiController
     internal static void Abort()
     {
         failed = true;
+        choicesGate.Invalidate();
+        nameRequestPending = false;
+        pendingNameChoiceCancel = null;
         sessionGeneration++;
         Recovery.Run(() =>
         {
@@ -171,7 +228,7 @@ internal static partial class PresetUiController
         SetHeaderMode(HeaderMode.None);
         presetUiOpen = true;
         AppearanceEditorUi.RefreshFooterForPresetState();
-        choiceCallback ??= SessionCallback(OnChoice);
+        choiceCallback = SessionCallback(OnChoice);
         var ids = new Il2CppSystem.Collections.Generic.List<uint>();
         ids.Add(PresetSaveTextId);
         ids.Add(PresetLoadTextId);
@@ -184,7 +241,11 @@ internal static partial class PresetUiController
 
     internal static void Tick()
     {
+        RecoverFinishedClose();
         if (failed) { CloseFailedDialog(); return; }
+        // Do not let disappearance recovery invalidate an explicit close callback.
+        if (closeGate.Pending) return;
+        CompleteNameChoiceCancel();
         if (completionDialogOpen)
         {
             // MessageDialogSmall is opened through the game's asynchronous
@@ -226,9 +287,16 @@ internal static partial class PresetUiController
 
         if (returnToSaveSlots)
         {
+            // Visibility can end before the keyboard's close/state transition.
+            // Opening the list then lets that outstanding close dismiss it.
+            if (nameRequestKeyboard != null && (nameRequestKeyboard.stateContext == null ||
+                nameRequestKeyboard.stateContext.CurrentState != KeyboardManager.State.Idle)) return;
+            var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
+            if (manager == null || manager.IsDialog) return;
             if (Resources.FindObjectsOfTypeAll<UIInputDialog>()
                 .Any(item => item != null && item.gameObject.activeInHierarchy)) return;
             returnToSaveSlots = false;
+            nameRequestKeyboard = null;
             Plugin.Guard("preset-name-return-to-slots", OpenSlotMenu);
             return;
         }
@@ -293,8 +361,34 @@ internal static partial class PresetUiController
             return;
         }
         slotDialogClosedAfter = after;
-        slotDialogClosedCallback ??= SessionCallback(OnSlotDialogClosed);
-        manager.CloseDialog(null, slotDialogClosedCallback, true, true, false);
+        slotDialogClosedCallback = SessionCallback(OnSlotDialogClosed);
+        CloseTrackedDialog(manager, slotDialogClosedCallback, true);
+    }
+
+    private static void CloseTrackedDialog(UIManager manager, Il2CppSystem.Action after, bool restoreSlot = false)
+    {
+        if (closeGate.Pending) return;
+        choicesGate.Invalidate();
+        long close = closeGate.Begin();
+        int session = sessionGeneration;
+        try
+        {
+            TrackClosingTarget(manager, close);
+            trackedCloseCallback = DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)(() =>
+            {
+                // Release the official close even if abort retired its navigation.
+                if (!closeGate.Consume(close)) return;
+                Plugin.Guard("preset-dialog-closed", () =>
+                {
+                    if (restoreSlot) RestoreClosedSlotDialogPosition();
+                    if (session == sessionGeneration && !failed) after?.Invoke();
+                }, Abort);
+            }));
+        }
+        catch { closeGate.Consume(close); throw; }
+        // Once submitted, a thrown call may already be closing; retain the wait.
+        try { manager.CloseDialog(null, trackedCloseCallback, true, true, false); }
+        catch { closingCallFailed = true; throw; }
     }
 
     private static void OnSlotDialogClosed()
@@ -316,14 +410,14 @@ internal static partial class PresetUiController
             // Keep the shifted position for this dialog's closing animation.
             RemoveObjectPreview(restoreDialogPosition: false);
             SetHeaderMode(HeaderMode.None);
-            reopenMenuAfterDialog ??= SessionCallback(Open);
+            reopenMenuAfterDialog = SessionCallback(Open);
             CloseSlotDialog(manager, reopenMenuAfterDialog);
             return true;
         }
         // The final argument is isMaskLeave.  It must be false so this dialog owns
         // and removes its translucent mask instead of leaving one behind.
-        closePresetAfterDialog ??= SessionCallback(EndPresetUi);
-        manager.CloseDialog(null, closePresetAfterDialog, true, true, false);
+        closePresetAfterDialog = SessionCallback(EndPresetUi);
+        CloseTrackedDialog(manager, closePresetAfterDialog);
         return true;
     }
 
@@ -343,8 +437,8 @@ internal static partial class PresetUiController
         }
         savingSlot = index == 0;
         SetHeaderMode(savingSlot ? HeaderMode.Save : HeaderMode.Load);
-        openSlotsAfterDialog ??= SessionCallback(OpenSlotMenu);
-        manager.CloseDialog(null, openSlotsAfterDialog, true, true, false);
+        openSlotsAfterDialog = SessionCallback(OpenSlotMenu);
+        CloseTrackedDialog(manager, openSlotsAfterDialog);
     }
 
     private static void OpenSlotMenu()
@@ -355,7 +449,7 @@ internal static partial class PresetUiController
         slotDialog = null;
         slotChoiceBars = null;
         previewAttempted = false;
-        slotCallback ??= SessionCallback(OnSlotChoice);
+        slotCallback = SessionCallback(OnSlotChoice);
         var ids = new Il2CppSystem.Collections.Generic.List<uint>();
         for (var i = 0; i < PresetStorage.UiSlotCount; i++) ids.Add(PresetEmptySlotTextId + (uint)i);
         ids.Add(StockCancelChoiceTextId);
@@ -367,10 +461,17 @@ internal static partial class PresetUiController
 
     // Called from the same controllable-UI route as the stock Y/LShift action.
     // It only claims the input while our slot selector is actually open.
-    internal static bool TryOpenDeleteForFocusedSlot()
+    internal static bool TryOpenDeleteForFocusedSlot(ControllableUI source)
     {
+        if (source == null || !source.gameObject.activeInHierarchy || closeGate.Pending) return false;
         if (!slotMenuOpen || deleteConfirmOpen) return false;
         if (slotDialog == null || !slotDialog.gameObject.activeInHierarchy) return false;
+        var owner = source.GetComponentInParent<UIDialog>();
+        if (owner == null || IL2CPP.Il2CppObjectBaseToPtr(owner) != IL2CPP.Il2CppObjectBaseToPtr(slotDialog)) return false;
+        var ui = UnityEngine.Object.FindObjectOfType<UIManager>();
+        if (ui == null || !ui.IsDialog || ui.CurrentUIKey != UILoadKey.SelectDialog ||
+            ui.DialogManager == null || !ui.DialogManager.TryGetPage(ui.CurrentUIKey, out var current) ||
+            current == null || IL2CPP.Il2CppObjectBaseToPtr(current) != IL2CPP.Il2CppObjectBaseToPtr(slotDialog)) return false;
         var focused = FocusedSlotChoice();
         var index = focused?.data?.id ?? -1;
         if (index < 0 || index >= PresetStorage.UiSlotCount) return true;
@@ -394,7 +495,7 @@ internal static partial class PresetUiController
             EndPresetUi();
             return true;
         }
-        openDeleteConfirmationAfterDialog ??= SessionCallback(OpenDeleteConfirmation);
+        openDeleteConfirmationAfterDialog = SessionCallback(OpenDeleteConfirmation);
         CloseSlotDialog(manager, openDeleteConfirmationAfterDialog);
         return true;
     }
@@ -425,7 +526,7 @@ internal static partial class PresetUiController
             return;
         }
         deleteConfirmOpen = true;
-        deleteCallback ??= SessionCallback(OnDeleteChoice);
+        deleteCallback = SessionCallback(OnDeleteChoice);
         var ids = new Il2CppSystem.Collections.Generic.List<uint>();
         ids.Add(StockYesChoiceTextId);
         ids.Add(StockCancelChoiceTextId);
@@ -448,7 +549,7 @@ internal static partial class PresetUiController
             if (!failed && AppearanceSession.Enabled)
             {
                 pendingCompletion = deleted ? CompletionMessage.Delete : CompletionMessage.SaveFailed;
-                reopenSlotsAfterCompletion ??= SessionCallback(OpenSlotMenu);
+                reopenSlotsAfterCompletion = SessionCallback(OpenSlotMenu);
                 completionAfterClose = reopenSlotsAfterCompletion;
             }
         }
@@ -461,13 +562,13 @@ internal static partial class PresetUiController
         }
         if (pendingCompletion == CompletionMessage.Delete || pendingCompletion == CompletionMessage.SaveFailed)
         {
-            openCompletionAfterDeleteDialog ??= SessionCallback(OpenCompletionDialog);
-            manager.CloseDialog(null, openCompletionAfterDeleteDialog, true, true, false);
+            openCompletionAfterDeleteDialog = SessionCallback(OpenCompletionDialog);
+            CloseTrackedDialog(manager, openCompletionAfterDeleteDialog);
         }
         else
         {
-            reopenSlotsAfterDeleteDialog ??= SessionCallback(OpenSlotMenu);
-            manager.CloseDialog(null, reopenSlotsAfterDeleteDialog, true, true, false);
+            reopenSlotsAfterDeleteDialog = SessionCallback(OpenSlotMenu);
+            CloseTrackedDialog(manager, reopenSlotsAfterDeleteDialog);
         }
     }
 
@@ -498,12 +599,12 @@ internal static partial class PresetUiController
         }
         if (savingSlot)
         {
-            openNameAfterDialog ??= SessionCallback(OpenNameInput);
+            openNameAfterDialog = SessionCallback(OpenNameInput);
             CloseSlotDialog(manager, openNameAfterDialog);
         }
         else
         {
-            loadSlotAfterDialog ??= SessionCallback(LoadSelectedSlot);
+            loadSlotAfterDialog = SessionCallback(LoadSelectedSlot);
             CloseSlotDialog(manager, loadSlotAfterDialog);
         }
     }
@@ -521,6 +622,7 @@ internal static partial class PresetUiController
 
     private static void OpenNameInput()
     {
+        choicesGate.Invalidate();
         var keyboard = UnityEngine.Object.FindObjectOfType<KeyboardManager>();
         if (keyboard == null)
         {
@@ -529,13 +631,23 @@ internal static partial class PresetUiController
             return;
         }
         int ticket = sessionGeneration;
-        inputCallback ??= DelegateSupport.ConvertDelegate<KeyboardManager.InputCompleteCallback>(
+        long request = ++nameRequestVersion;
+        nameRequestKeyboard = keyboard;
+        nameRequestPending = true;
+        pendingNameChoiceCancel = null;
+        inputCallback = DelegateSupport.ConvertDelegate<KeyboardManager.InputCompleteCallback>(
             (Action<KeyboardManager.Result, string>)((result, text) =>
             {
-                if (ticket == sessionGeneration && !failed)
+                if (ticket == sessionGeneration && !failed &&
+                    (result == KeyboardManager.Result.Success || result == KeyboardManager.Result.Cancel) &&
+                    ConsumeNameRequest(request))
                     Plugin.Guard("preset-name-complete", () => OnNameInputCompleted(result, text), Abort);
             }));
-        inputCancelled ??= SessionCallback(OnNameInputCancelled);
+        inputCancelled = DelegateSupport.ConvertDelegate<Il2CppSystem.Action>((Action)(() =>
+        {
+            if (ticket == sessionGeneration && !failed && ConsumeNameRequest(request))
+                Plugin.Guard("preset-name-cancel", OnNameInputCancelled, Abort);
+        }));
         nameInputOpen = true;
         nameFooterRequested = false;
         try
@@ -555,6 +667,7 @@ internal static partial class PresetUiController
     {
         if (result == KeyboardManager.Result.Success)
         {
+            pendingNameChoiceCancel = null;
             nameInputOpen = false;
             RestoreNameInputFooter();
             var saved = false;
@@ -579,11 +692,52 @@ internal static partial class PresetUiController
     private static void OnNameInputCancelled()
     {
         if (!nameInputOpen) return;
+        bool stockPlaysCancelSound = pendingNameChoiceCancel != null;
+        pendingNameChoiceCancel = null;
         nameInputOpen = false;
         RestoreNameInputFooter();
         returnToSaveSlots = true;
-        Plugin.Guard("preset-name-cancel-sound", () =>
+        if (!stockPlaysCancelSound) Plugin.Guard("preset-name-cancel-sound", () =>
             UnityEngine.Object.FindObjectOfType<UIAccessor>()?.PlaySe(UISoundTypes.Cancel));
+    }
+
+    private static bool ConsumeNameRequest(long request)
+    {
+        if (!nameRequestPending || request != nameRequestVersion) return false;
+        // Consume before saving or navigating: official notifications may re-enter.
+        nameRequestPending = false;
+        return true;
+    }
+
+    internal static KeyboardManager GetOwnNameChoiceKeyboard(ControllableUI source)
+    {
+        if (!nameInputOpen || source == null || source.TryCast<UIDialogChoiceBar>() == null) return null;
+        var input = source.GetComponentInParent<UIInputDialog>();
+        if (input == null || !input.gameObject.activeInHierarchy) return null;
+        var keyboard = UnityEngine.Object.FindObjectOfType<KeyboardManager>();
+        return IsOwnNameInput(keyboard) ? keyboard : null;
+    }
+
+    internal static bool PrepareNameChoiceCancel(KeyboardManager keyboard)
+    {
+        if (!nameRequestPending || keyboard.stateContext == null ||
+            keyboard.stateContext.CurrentState != KeyboardManager.State.Inputting ||
+            keyboard.result != KeyboardManager.Result.None) return false;
+        // Supply the missing result; the stock choice bar still owns close and SE.
+        pendingNameChoiceCancel = keyboard;
+        keyboard.SetResultCancel();
+        return true;
+    }
+
+    private static void CompleteNameChoiceCancel()
+    {
+        if (!nameInputOpen || pendingNameChoiceCancel == null) return;
+        var context = pendingNameChoiceCancel.stateContext;
+        if (context == null || context.CurrentState != KeyboardManager.State.Idle) return;
+        var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
+        if (manager == null || manager.IsDialog) return;
+        // Only bridge a cancel explicitly requested above, after official completion.
+        if (ConsumeNameRequest(nameRequestVersion)) OnNameInputCancelled();
     }
 
     private static void RefreshNameInputFooter()
@@ -637,7 +791,7 @@ internal static partial class PresetUiController
             // MessageDialogSmall is backed by UIDefaultDialog and requires
             // UIDefaultDialogData. Even a notification with no visible choices
             // still needs a non-null ChoicesData contract for its input setup.
-            completionCallback ??= SessionCallback(OnCompletionChoice);
+            completionCallback = SessionCallback(OnCompletionChoice);
             var ids = new Il2CppSystem.Collections.Generic.List<uint>();
             var choices = new ChoicesData(ids, completionCallback, LocalizeTextTableType.DialogChoiceText);
             var data = new UIDefaultDialogData(textId, choices, new Il2CppStringArray(0L));
@@ -664,8 +818,8 @@ internal static partial class PresetUiController
         // A zero-choice UIDefaultDialog forwards B/Esc to this callback but
         // does not close itself. Close it once through the same UIManager path,
         // then either restore appearance mode or return to the delete slot list.
-        completionClosedAfter ??= SessionCallback(OnCompletionClosed);
-        manager.CloseDialog(null, completionClosedAfter, true, true, false);
+        completionClosedAfter = SessionCallback(OnCompletionClosed);
+        CloseTrackedDialog(manager, completionClosedAfter);
     }
 
     private static void OnCompletionClosed()
@@ -719,6 +873,11 @@ internal static partial class PresetUiController
 
     private static void EndPresetUi()
     {
+        choicesGate.Invalidate();
+        nameRequestKeyboard = null;
+        nameRequestPending = false;
+        pendingNameChoiceCancel = null;
+        nameRequestVersion++;
         var afterClose = notificationAfterClose;
         notificationAfterClose = null;
         sessionGeneration++;
@@ -760,6 +919,14 @@ internal static partial class PresetUiController
 
     internal static bool IsNameInputOpen => nameInputOpen;
     internal static bool IsPresetUiOpen => presetUiOpen;
+    internal static bool ShouldBlockEditorInput(ControllableUI source)
+    {
+        if (!presetUiOpen || !AppearanceEditorUi.Active || source == null) return false;
+        var root = AppearanceEditorUi.PageTransform;
+        var target = source.transform;
+        return root != null && target != null && (target == root || target.IsChildOf(root)) &&
+            source.GetComponentInParent<UIDialog>() == null;
+    }
     internal static bool IsCompletionDialogOpen => completionDialogOpen;
     internal static bool IsSlotMenuOpen => slotMenuOpen;
 
@@ -811,6 +978,35 @@ internal static partial class PresetUiController
 
 // Override the computed cancel flag only for our own keyboard request.  The
 // game's shared BuyPetAnimal master data is never changed.
+[HarmonyPatch(typeof(ControllableUI), nameof(ControllableUI.OnSouth))]
+internal static class PresetNameChoiceCancel
+{
+    static bool Prefix(ControllableUI __instance)
+    {
+        bool owned = false;
+        bool allow = true;
+        Plugin.Guard("preset-name-choice-cancel", () =>
+        {
+            if (PresetUiController.ShouldBlockEditorInput(__instance))
+            {
+                owned = true;
+                allow = false;
+                return;
+            }
+            var keyboard = PresetUiController.GetOwnNameChoiceKeyboard(__instance);
+            if (keyboard == null) return;
+            owned = true;
+            allow = false;
+            allow = PresetUiController.PrepareNameChoiceCancel(keyboard);
+        }, () =>
+        {
+            if (owned) allow = false;
+            PresetUiController.Abort();
+        });
+        return allow;
+    }
+}
+
 [HarmonyPatch(typeof(KeyboardManager), "get_IsCancelButtonDisabled")]
 internal static class PresetNameProbeCancel
 {

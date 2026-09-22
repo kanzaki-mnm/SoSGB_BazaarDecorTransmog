@@ -172,12 +172,14 @@ internal static class NativeAppearanceDetailGuard
 [HarmonyPatch(typeof(ControllableUI), nameof(ControllableUI.OnNorth))]
 internal static class NativeAppearanceDetailInputGuard
 {
-    static bool Prefix()
+    static bool Prefix(ControllableUI __instance)
     {
         // UISelectDialog receives Y through ControllableUI.OnNorth.  Handle
         // our slot-list command here before the appearance page's generic
         // detail guard consumes it.
-        if (PresetUiController.TryOpenDeleteForFocusedSlot()) return false;
+        bool handled = false;
+        Plugin.Guard("preset-delete-input", () => handled = PresetUiController.TryOpenDeleteForFocusedSlot(__instance), PresetUiController.Abort);
+        if (handled) return false;
         if (!AppearanceEditorUi.Active) return true;
         return false;
     }
@@ -267,8 +269,30 @@ internal static class NativeDecide
     static bool Prefix(UIBazaarCustomPage __instance, BazaarCustomItemData data)
     {
         if (!AppearanceEditorUi.Active) return true;
+        if (PresetUiController.IsPresetUiOpen) return false;
         Plugin.Guard("native-ui-decide", () => AppearanceEditorUi.Select(data, __instance.selectTabCategory, true), AppearanceEditorUi.Abort);
         return false;
+    }
+}
+
+[HarmonyPatch]
+internal static class PresetEditorInputEligibility
+{
+    static System.Collections.Generic.IEnumerable<System.Reflection.MethodBase> TargetMethods()
+    {
+        // Icons override eligibility independently of the page. Neither should
+        // accept background input in the gap between official preset dialogs.
+        yield return AccessTools.DeclaredMethod(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.IsInputEnable));
+        yield return AccessTools.DeclaredMethod(typeof(UIIconContent), nameof(UIIconContent.IsInputEnable));
+    }
+
+    static void Postfix(ControllableUI __instance, ref bool __result)
+    {
+        if (!__result) return;
+        bool blocked = false;
+        Plugin.Guard("preset-background-input", () =>
+            blocked = PresetUiController.ShouldBlockEditorInput(__instance), PresetUiController.Abort);
+        if (blocked) __result = false;
     }
 }
 
@@ -277,6 +301,8 @@ internal static class NativeCancel
 {
     static bool Prefix()
     {
+        // The preset flow owns B even between two official dialogs.
+        if (AppearanceEditorUi.Active && PresetUiController.IsPresetUiOpen) return false;
         if (AppearanceEditorUi.IsModeTransitioning) return false;
         if (!AppearanceEditorUi.Active) return true;
         // A modal dialog or keyboard owns B / Esc until it closes. Let the game's
@@ -332,6 +358,7 @@ internal static class NativePresetStartProbe
     static bool Prefix()
     {
         if (!AppearanceEditorUi.Active) return true;
+        if (PresetUiController.IsPresetUiOpen) return false;
         Plugin.Guard("preset-dialog-probe", PresetUiController.Open, PresetUiController.Abort);
         return false;
     }

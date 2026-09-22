@@ -6,6 +6,7 @@
     <CheckEolTargetFramework>false</CheckEolTargetFramework>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../BazaarDecorTransmog/UiNotificationGate.cs" Link="UiNotificationGate.cs" />
     <Compile Include="../../BazaarDecorTransmog/VisualIdentity.cs" Link="VisualIdentity.cs" />
     <Compile Include="../../BazaarDecorTransmog/PresetModels.cs" Link="PresetModels.cs" />
     <Compile Include="../../BazaarDecorTransmog/PresetStorage.cs" Link="PresetStorage.cs" />
