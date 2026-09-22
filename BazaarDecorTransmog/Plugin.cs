@@ -11,7 +11,7 @@ namespace BazaarDecorTransmog;
 [BepInPlugin("com.icy.bazaardecortransmog", "BazaarDecorTransmog", Plugin.Version)]
 public sealed class Plugin : BasePlugin
 {
-    internal const string Version = "0.9.168";
+    internal const string Version = "0.9.172";
     internal static ManualLogSource Logger = null!;
     private static readonly HashSet<string> ReportedErrors = new();
 

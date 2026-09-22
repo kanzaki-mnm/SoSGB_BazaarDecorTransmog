@@ -22,6 +22,7 @@ internal sealed class SlotAppearance
         if (SameBinding(binding, value)) return;
         generation++;
         pending = false;
+        decisionFeedbackPending = false;
         focusAfterVisualId = 0;
         binding = value;
         missingVisualIdentity = false;
@@ -52,15 +53,15 @@ internal sealed class SlotAppearance
     private Transform liftedTransform;
     private Vector3 liftedBasePosition;
     private Vector3 liftAnimationFrom, liftAnimationTo;
-    private float liftAnimationStarted;
+    private float liftAnimationElapsed;
+    private int liftAnimationFrame;
     private bool liftAnimating, clearLiftAfterAnimation;
     private const float FocusLift = 0.45f;
     private const float EditorFocusLift = 0.5f;
     private const float FocusLiftDuration = 0.14f;
+    private const float MaxFocusAnimationStep = 1f / 30f;
     private const float DecisionDropDuration = 0.10f;
-    private bool nativeEditorFocusRaised;
     private Transform editorFocusSource;
-    private Vector3 editorGroundPosition;
     private float editorGroundWorldY;
     private float nativeTransitionOverrideUntil;
     private Transform decisionSettleSource;
@@ -110,6 +111,7 @@ internal sealed class SlotAppearance
 
     internal void SetFocused(bool value)
     {
+        decisionFeedbackPending = false;
         focused = value;
         if (!value)
         {
@@ -124,6 +126,7 @@ internal sealed class SlotAppearance
 
     internal void SetEditorPoseImmediate(bool hovered)
     {
+        decisionFeedbackPending = false;
         focused = hovered;
         focusAfterVisualId = 0;
         nativeTransitionOverrideUntil = 0f;
@@ -152,6 +155,7 @@ internal sealed class SlotAppearance
 
     internal void SetFocusedAfterVisual(uint visualId)
     {
+        decisionFeedbackPending = false;
         // While browsing, the slot is already hovering. Keep that height through the
         // visual swap; only a model that was grounded by a decision should lift after
         // the incoming appearance has replaced it.
@@ -176,7 +180,6 @@ internal sealed class SlotAppearance
     internal void BeginEditorFocus(bool nativeRaised)
     {
         RestoreFocusOffsetImmediate();
-        nativeEditorFocusRaised = nativeRaised;
         editorFocusSource = null;
         CaptureEditorGroundPosition();
         if (nativeRaised && editorFocusSource != null &&
@@ -200,39 +203,25 @@ internal sealed class SlotAppearance
         // raised, grounded, or mid-animation when appearance mode is entered; its current
         // height is therefore never a reliable baseline.
         editorGroundWorldY = 0f;
-        editorGroundPosition = EditorPositionAtHeight(source, 0f);
-        nativeEditorFocusRaised = false;
     }
 
-    internal void PlayDecisionFeedback()
+    internal void PlayDecisionFeedback(bool includeActual = false)
     {
         focusAfterVisualId = 0;
         focused = false;
         nativeTransitionOverrideUntil = 0f;
-        if (binding == null || !binding.IsReplacement)
+        bool followsActual = binding == null || binding.IsActual ||
+            binding.IsHidden && !AppearanceSession.AllowsHidden(PartCategory);
+        if (missingVisualIdentity || !(binding?.IsReplacement == true || includeActual && followsActual))
         {
-            // Actual/Hidden have no replacement to animate. Leaving this pending caused
-            // the next ordinary item hovered to play a delayed, unintended landing.
+            // Individual Actual/Hidden selection keeps its existing behavior. Preset
+            // loads may animate visible native roots, but never hidden geometry.
             decisionFeedbackPending = false;
             decisionSettleSource = null;
             RestoreFocusOffsetImmediate();
             return;
         }
-        if (AppearanceSession.EditorPreview && editorFocusSource != null)
-        {
-            // The stock decision animation must receive the raised model root. Resetting
-            // it first made the visual snap to the floor and left the game's animation
-            // completion path waiting for a drop that never happened.
-            liftedTransform = null;
-            liftAnimating = false;
-            clearLiftAfterAnimation = false;
-            // A second confirm starts from the same hover height as the first one.
-            editorFocusSource.localPosition = EditorPositionAtHeight(editorFocusSource, EditorFocusLift);
-            decisionSettleSource = editorFocusSource;
-            decisionDropStarted = Time.unscaledTime;
-            decisionDropInitialLift = EditorFocusLift;
-        }
-        else RestoreFocusOffsetImmediate();
+        RestoreFocusOffsetImmediate();
         decisionFeedbackPending = true;
         TryPlayDecisionFeedback();
     }
@@ -729,7 +718,8 @@ internal sealed class SlotAppearance
         if (liftedTransform == null) return;
         liftAnimationFrom = liftedTransform.localPosition;
         liftAnimationTo = destination;
-        liftAnimationStarted = Time.unscaledTime;
+        liftAnimationElapsed = 0f;
+        liftAnimationFrame = Time.frameCount;
         liftAnimating = true;
         clearLiftAfterAnimation = clearAfter;
     }
@@ -743,7 +733,13 @@ internal sealed class SlotAppearance
             clearLiftAfterAnimation = false;
             return;
         }
-        float progress = Mathf.Clamp01((Time.unscaledTime - liftAnimationStarted) / FocusLiftDuration);
+        // A first-use model/UI load can consume the whole hover duration before
+        // another frame is drawn. Do not count that stall as visible animation,
+        // or advance twice when an immediate slot check runs in the same frame.
+        if (liftAnimationFrame == Time.frameCount) return;
+        liftAnimationFrame = Time.frameCount;
+        liftAnimationElapsed += Mathf.Min(Time.unscaledDeltaTime, MaxFocusAnimationStep);
+        float progress = Mathf.Clamp01(liftAnimationElapsed / FocusLiftDuration);
         // SmoothStep gives the same soft acceleration/deceleration feel as the editor UI.
         float eased = progress * progress * (3f - 2f * progress);
         if (AppearanceSession.EditorPreview && liftedTransform == editorFocusSource)
@@ -800,14 +796,34 @@ internal sealed class SlotAppearance
 
     private void TryPlayDecisionFeedback()
     {
-        if (!decisionFeedbackPending || shop == null || applied == null ||
-            appliedVisualId != ResolveVisual()) return;
+        if (!decisionFeedbackPending || shop == null) return;
+        if (binding?.IsReplacement == true &&
+            (applied == null || applied != CurrentModel() || appliedVisualId != ResolveVisual())) return;
+        if (AppearanceSession.EditorPreview) CaptureEditorGroundPosition();
         // During editor preview the replacement is a child of the native model. Animate
         // that native root so the replacement follows the game's landing animation.
         var target = AppearanceSession.EditorPreview ? editorFocusSource : FocusTransform();
-        if (target == null) return;
+        if (target == null || !target.gameObject.activeInHierarchy || ActualId(shop.BM) == 0) return;
         decisionFeedbackPending = false;
-        shop.PlayCustomAnim(PartCategory, slot, target);
+        // The same guard covers synchronous and resource-callback entry points; a
+        // failed cosmetic effect must not undo a successfully applied visual.
+        Plugin.Guard("slot-landing:" + PartCategory + ":" + slot, () =>
+        {
+            if (AppearanceSession.EditorPreview)
+            {
+                // Start the stock effect and absolute-height correction only after the
+                // incoming visual is ready. Starting the clock before an async load can
+                // finish the drop before the new model is ever visible.
+                liftedTransform = null;
+                liftAnimating = false;
+                clearLiftAfterAnimation = false;
+                target.localPosition = EditorPositionAtHeight(target, EditorFocusLift);
+                decisionSettleSource = target;
+                decisionDropStarted = Time.unscaledTime;
+                decisionDropInitialLift = EditorFocusLift;
+            }
+            shop.PlayCustomAnim(PartCategory, slot, target);
+        }, () => SetEditorPoseImmediate(false));
     }
 
     private void Reject(string reason)

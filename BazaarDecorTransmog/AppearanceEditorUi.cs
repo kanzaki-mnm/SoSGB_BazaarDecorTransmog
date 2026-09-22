@@ -234,6 +234,7 @@ internal static class AppearanceEditorUi
     }
 
     internal static bool IsModeTransitioning => modeTransitioning;
+    internal static bool IsEnteringAppearanceMode => modeTransitioning && transitionEntering;
 
     private static void TransitionAppearance(bool entering)
     {

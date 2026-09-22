@@ -391,7 +391,6 @@ internal static class AppearanceSession
             LoadDraft(preset);
             RefreshFieldModelsNow();
             AppearanceEditorUi.RefreshAfterPresetLoad();
-            return true;
         }
         catch (Exception ex)
         {
@@ -404,6 +403,26 @@ internal static class AppearanceSession
             Plugin.Warn("PresetUiLoadError", new { slot = index + 1, error = ex.Message });
             return false;
         }
+        // Animation is feedback for a successful load, not part of the transaction.
+        // A cosmetic failure must not roll back the preset or report a failed load.
+        if (EditorPreview)
+            foreach (var slot in slots)
+            {
+                if (!Enabled || !EditorPreview) break;
+                bool modelUpdateSucceeded = false;
+                // Tick also changes renderer visibility. A failed update needs the
+                // same full restoration as the regular slot-update path.
+                Plugin.Guard("preset-load-model:" + slot.PartCategory + ":" + slot.Index, () =>
+                {
+                    slot.Tick(immediate: true);
+                    modelUpdateSucceeded = true;
+                }, () => slot.Restore("preset model update failed"));
+                if (!modelUpdateSucceeded || !Enabled || !EditorPreview) continue;
+                Plugin.Guard("preset-load-landing:" + slot.PartCategory + ":" + slot.Index,
+                    () => slot.PlayDecisionFeedback(includeActual: true),
+                    () => slot.SetEditorPoseImmediate(false));
+            }
+        return true;
     }
 
     internal static bool SaveUiSlot(int index, string enteredName)

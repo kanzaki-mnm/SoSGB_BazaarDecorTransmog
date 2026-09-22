@@ -4,14 +4,14 @@
     <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
-    <Version>0.9.168</Version>
+    <Version>0.9.172</Version>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <GameDir Condition="'$(GameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\STORY OF SEASONS Grand Bazaar</GameDir>
   </PropertyGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\actual_appearance_icon.rgba" />
-    <Compile Include="Plugin.cs" /><Compile Include="ClosedTentProbe.cs" /><Compile Include="ClosedShelfProbe.cs" />
+    <Compile Include="Plugin.cs" /><Compile Include="BazaarDecorTransmogApi.cs" /><Compile Include="ClosedTentProbe.cs" /><Compile Include="ClosedShelfProbe.cs" />
     <Compile Include="AppearanceEditorUi.cs" /><Compile Include="AppearanceEditorPatches.cs" /><Compile Include="Localization.cs" />
     <Compile Include="PresetUiController.cs" /><Compile Include="PresetUiController.Preview.cs" /><Compile Include="UiTextIds.cs" />
     <Compile Include="SlotAppearance.cs" /><Compile Include="AppearanceDriver.cs" /><Compile Include="AppearanceSession.cs" />
