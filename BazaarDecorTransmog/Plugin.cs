@@ -11,7 +11,7 @@ namespace BazaarDecorTransmog;
 [BepInPlugin("com.icy.bazaardecortransmog", "BazaarDecorTransmog", Plugin.Version)]
 public sealed class Plugin : BasePlugin
 {
-    internal const string Version = "0.9.172";
+    internal const string Version = "0.9.178";
     internal static ManualLogSource Logger = null!;
     private static readonly HashSet<string> ReportedErrors = new();
 
@@ -26,7 +26,8 @@ public sealed class Plugin : BasePlugin
             AppearanceSession.Configure();
             transmogHarmony.CreateClassProcessor(typeof(ObserveShop)).Patch();
             transmogHarmony.CreateClassProcessor(typeof(BeforeEditing)).Patch();
-            foreach (var patch in new[] { typeof(ClosedTentProbe), typeof(ClosedTentModelReady), typeof(ClosedShelfProbe), typeof(NativeFieldModelReady), typeof(NativeFieldModelInitialized), typeof(NativePageShown), typeof(NativeFocus), typeof(NativeDecide), typeof(NativeAppearanceChoiceSound), typeof(NativeCancel), typeof(NativePageClosed), typeof(NativePlacementGuard), typeof(NativeAppearanceInput), typeof(NativePresetStartProbe), typeof(PresetNameProbeCancel), typeof(PresetCompletionDialogCancel), typeof(PresetEmptySlotDecisionGuard), typeof(NativeAppearanceGuideLocalization), typeof(NativeAppearanceFooterGuideData), typeof(NativeAppearanceDetailGuard), typeof(NativeAppearanceDetailInputGuard), typeof(NativeStockObjectExitChoiceGuideState) })
+            transmogHarmony.CreateClassProcessor(typeof(PresetEditorInputEligibility)).Patch();
+            foreach (var patch in new[] { typeof(ClosedTentProbe), typeof(ClosedTentModelReady), typeof(ClosedShelfProbe), typeof(NativeFieldModelReady), typeof(NativeFieldModelInitialized), typeof(NativePageShown), typeof(NativeFocus), typeof(NativeDecide), typeof(NativeAppearanceChoiceSound), typeof(NativeCancel), typeof(NativePageClosed), typeof(NativePlacementGuard), typeof(NativeAppearanceInput), typeof(NativePresetStartProbe), typeof(PresetNameProbeCancel), typeof(PresetNameChoiceCancel), typeof(PresetCompletionDialogCancel), typeof(PresetEmptySlotDecisionGuard), typeof(NativeAppearanceGuideLocalization), typeof(NativeAppearanceFooterGuideData), typeof(NativeAppearanceDetailGuard), typeof(NativeAppearanceDetailInputGuard), typeof(NativeStockObjectExitChoiceGuideState) })
                 transmogHarmony.CreateClassProcessor(patch).Patch();
             foreach (var patch in new[] { typeof(NativeAppearanceInitialFocus), typeof(NativeAppearanceTabPreviewGuard),
                 typeof(NativeAppearanceCheckmark), typeof(NativeAppearanceChoiceListUpdate),
