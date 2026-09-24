@@ -14,7 +14,7 @@
     <Compile Include="Plugin.cs" /><Compile Include="BazaarDecorTransmogApi.cs" /><Compile Include="ClosedTentProbe.cs" /><Compile Include="ClosedShelfProbe.cs" />
     <Compile Include="AppearanceEditorUi.cs" /><Compile Include="AppearanceEditorPatches.cs" /><Compile Include="Localization.cs" />
     <Compile Include="PresetUiController.cs" /><Compile Include="PresetUiController.Preview.cs" /><Compile Include="UiTextIds.cs" />
-    <Compile Include="SlotAppearance.cs" /><Compile Include="AppearanceDriver.cs" /><Compile Include="AppearanceSession.cs" />
+    <Compile Include="SlotAppearance.cs" /><Compile Include="AppearanceDriver.cs" /><Compile Include="AppearanceSession.cs" /><Compile Include="AppearanceModelPreloader.cs" />
     <Compile Include="PresetModels.cs" /><Compile Include="PresetStorage.cs" />
     <Compile Include="VisualIdentity.cs" /><Compile Include="Recovery.cs" /><Compile Include="UiNotificationGate.cs" />
     <Content Include="i18n\*.json"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>

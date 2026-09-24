@@ -469,10 +469,12 @@ internal static class AppearanceEditorUi
         }
         else if (data.PartsData != null)
         {
-            detail.SetData(data);
-            // SetData has already localized the text, but its caption starts with three
-            // generated rows for series, effect, and target. Appearance mode needs only
-            // the remaining flavor description.
+            // The ordinary SetData overload composes series/effect/target rows ahead of the
+            // flavor text. Request the underlying item name and caption tables directly so
+            // this remains correct for every game language and for decor with fewer rows.
+            uint textId = data.PartsData.Id;
+            detail.SetData(textId, textId,
+                LocalizeTextTableType.ItemNameText, LocalizeTextTableType.ItemCaptionText);
             if (detail.caption?.text is string caption)
                 detail.caption.SetText(AppearanceFlavor(caption));
         }
@@ -484,10 +486,18 @@ internal static class AppearanceEditorUi
     private static string AppearanceFlavor(string caption)
     {
         int start = 0;
-        for (int row = 0; row < 3; row++)
+        int removedRows = 0;
+        // The localized item caption begins with up to three label/value rows. Their
+        // wording varies by language, but the game separates every label with a colon.
+        // Stop at the first non-labelled row so colons later in flavor prose are retained.
+        while (start < caption.Length && removedRows < 3)
         {
             int newline = caption.IndexOf('\n', start);
-            if (newline < 0) return caption;
+            int end = newline >= 0 ? newline : caption.Length;
+            string row = caption[start..end];
+            if (!row.Contains(':') && !row.Contains('：')) break;
+            removedRows++;
+            if (newline < 0) return string.Empty;
             start = newline + 1;
         }
         return caption[start..].TrimStart('\r', '\n');
@@ -770,29 +780,41 @@ internal static class AppearanceEditorUi
             readback = new Texture2D(width, height, TextureFormat.RGBA32, false);
             // textureRect may be trimmed inside an atlas. Preserve the original
             // sprite's transparent margins so the veil has the same visual size.
-            for (int y = 0; y < height; y++)
-                for (int x = 0; x < width; x++) readback.SetPixel(x, y, Color.clear);
+            // SetPixel crosses the managed/Unity boundary once per pixel and caused a
+            // visible first-tab stall. Clear the texture in one bulk operation instead.
+            readback.SetPixels32(new Color32[width * height]);
             readback.Apply(false, false);
             readback.ReadPixels(region, copyX, copyY, false);
             readback.Apply(false, false);
-            var pixels = readback.GetPixels();
-            var veilPixels = new Color[pixels.Length];
+            var pixels = readback.GetPixels32();
+            var horizontalAlpha = new byte[pixels.Length];
+            var veilPixels = new Color32[pixels.Length];
+            // A square dilation is separable. Two short one-dimensional passes produce
+            // the same two-pixel outline with far fewer comparisons than scanning the
+            // full 5x5 neighbourhood for every pixel.
             for (int y = 0; y < height; y++)
                 for (int x = 0; x < width; x++)
                 {
-                    // Dilate alpha only: this makes a narrow cream outline that
-                    // follows the art rather than scaling the full rectangular UI Image.
-                    float alpha = 0f;
-                    int minY = Mathf.Max(0, y - ActualVeilOutlinePixels);
-                    int maxY = Mathf.Min(height - 1, y + ActualVeilOutlinePixels);
+                    byte alpha = 0;
                     int minX = Mathf.Max(0, x - ActualVeilOutlinePixels);
                     int maxX = Mathf.Min(width - 1, x + ActualVeilOutlinePixels);
-                    for (int sampleY = minY; sampleY <= maxY; sampleY++)
-                        for (int sampleX = minX; sampleX <= maxX; sampleX++)
-                            alpha = Mathf.Max(alpha, pixels[sampleY * width + sampleX].a);
-                    veilPixels[y * width + x] = new Color(1f, 1f, 1f, alpha);
+                    for (int sampleX = minX; sampleX <= maxX; sampleX++)
+                        if (pixels[y * width + sampleX].a > alpha)
+                            alpha = pixels[y * width + sampleX].a;
+                    horizontalAlpha[y * width + x] = alpha;
                 }
-            readback.SetPixels(veilPixels);
+            for (int y = 0; y < height; y++)
+                for (int x = 0; x < width; x++)
+                {
+                    byte alpha = 0;
+                    int minY = Mathf.Max(0, y - ActualVeilOutlinePixels);
+                    int maxY = Mathf.Min(height - 1, y + ActualVeilOutlinePixels);
+                    for (int sampleY = minY; sampleY <= maxY; sampleY++)
+                        if (horizontalAlpha[sampleY * width + x] > alpha)
+                            alpha = horizontalAlpha[sampleY * width + x];
+                    veilPixels[y * width + x] = new Color32(255, 255, 255, alpha);
+                }
+            readback.SetPixels32(veilPixels);
             readback.Apply(false, true);
             readback.name = "BazaarDecorTransmog.WhiteIcon." + key;
             var pivot = new Vector2(source.pivot.x / source.rect.width, source.pivot.y / source.rect.height);
@@ -1020,30 +1042,55 @@ internal static class AppearanceEditorUi
         if (modeTitle == null)
         {
             var root = page.transform.root;
+            UIPageHeader localizedHeader = null;
+            int visibleHeaderCount = 0;
             foreach (var header in root.GetComponentsInChildren<UIPageHeader>(true))
             {
                 var text = header?.headerText;
-                string replacement = ReplacementTitle(text?.text);
-                if (text == null || replacement == null) continue;
-                modeTitle = text;
-                originalTitle = text.text;
+                if (text == null) continue;
+
+                // The Japanese and English labels are stable known identifiers. For every
+                // other language, use the sole visible page header instead of depending on
+                // translated text that can change with the game's localization data.
+                if (text.text == "オブジェの変更" || text.text == "Redecorate")
+                {
+                    localizedHeader = header;
+                    break;
+                }
+                if (header.gameObject.activeInHierarchy && text.gameObject.activeInHierarchy)
+                {
+                    localizedHeader = header;
+                    visibleHeaderCount++;
+                }
+            }
+
+            if (localizedHeader != null &&
+                (localizedHeader.headerText.text == "オブジェの変更" ||
+                 localizedHeader.headerText.text == "Redecorate" ||
+                 visibleHeaderCount == 1))
+            {
+                modeTitle = localizedHeader.headerText;
+                originalTitle = modeTitle.text;
                 if (originalTitle == "オブジェの変更") Localization.SetLanguage(Language.ja);
                 else if (originalTitle == "Redecorate") Localization.SetLanguage(Language.en);
-                originalTitleColor = text.color;
-                modeBackground = header.bg;
+                originalTitleColor = modeTitle.color;
+                modeBackground = localizedHeader.bg;
                 if (modeBackground != null) originalBackgroundColor = modeBackground.color;
-                modeIcon = header.icon;
+                modeIcon = localizedHeader.icon;
                 if (modeIcon != null) originalIconColor = modeIcon.color;
-                break;
             }
             if (modeTitle == null && !titleSearchReported)
             {
                 titleSearchReported = true;
-                Plugin.Warn("NativeModeTitleNotFound", new { expected = new[] { "オブジェの変更", "Redecorate" } });
+                Plugin.Warn("NativeModeTitleNotFound", new
+                {
+                    expected = new[] { "オブジェの変更", "Redecorate", "one visible localized header" },
+                    visibleHeaderCount
+                });
             }
         }
         if (modeTitle == null) return;
-        modeTitle.text = ReplacementTitle(originalTitle);
+        modeTitle.text = ReplacementTitle();
         modeTitle.color = new Color(0.38f, 0.20f, 0.55f, 1f);
         if (modeBackground != null)
             modeBackground.color = new Color(0.95f, 0.72f, 1f, originalBackgroundColor.a);
@@ -1073,7 +1120,7 @@ internal static class AppearanceEditorUi
         titleSearchReported = false;
     }
 
-    private static string ReplacementTitle(string current)
+    private static string ReplacementTitle()
     {
         switch (PresetUiController.CurrentHeaderMode)
         {
@@ -1082,12 +1129,7 @@ internal static class AppearanceEditorUi
             case PresetUiController.HeaderMode.Load:
                 return Localization.Get("presets.menu.load");
         }
-        return current switch
-        {
-            "オブジェの変更" => Localization.Get("appearance.title"),
-            "Redecorate" => Localization.Get("appearance.title"),
-            _ => null
-        };
+        return Localization.Get("appearance.title");
     }
 
     private static void ApplyAppearanceGuide()
