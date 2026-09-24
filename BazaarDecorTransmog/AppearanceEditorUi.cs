@@ -42,6 +42,14 @@ internal static class AppearanceEditorUi
     private static bool exitConfirmationOpen;
     private static bool exitPosePreserving;
     private static bool exitPoseHovered;
+    private static BazaarCustomItemData exitFocusData;
+    private static BazaarCustomPageCategory exitFocusCategory;
+    private static BazaarCustomItemData cancelInputFocusData;
+    private static BazaarCustomPageCategory cancelInputFocusCategory;
+    private static BazaarCustomItemData pendingExitFocusData;
+    private static BazaarCustomPageCategory pendingExitFocusCategory;
+    private static bool pendingExitFocusHovered;
+    private static int pendingExitFocusFrame = -1;
     private static Il2CppSystem.Action<int> exitChoiceCallback;
     private static Il2CppSystem.Action leaveAfterDialog;
     private static Il2CppSystem.Action restorePoseAfterDialog;
@@ -73,6 +81,10 @@ internal static class AppearanceEditorUi
         modeTransitioning = false;
         exitConfirmationOpen = false;
         exitPosePreserving = false;
+        exitFocusData = null;
+        cancelInputFocusData = null;
+        pendingExitFocusData = null;
+        pendingExitFocusFrame = -1;
         bool wasActive = Active;
         lastFocusData = null;
         Recovery.Run(() =>
@@ -136,6 +148,7 @@ internal static class AppearanceEditorUi
     internal static void LeaveAppearanceFromCancel()
     {
         if (!Active || modeTransitioning || exitConfirmationOpen) return;
+        CancelPendingExitFocus();
         BeginExitPosePreservation();
         if (!AppearanceSession.HasAppearanceSessionChanges())
         {
@@ -181,7 +194,7 @@ internal static class AppearanceEditorUi
         if (manager == null)
         {
             if (leave) FinishAppearanceSessionAndLeave();
-            else EndExitPosePreservation();
+            else RestoreExitPoseAndEndPreservation();
             return;
         }
         if (index == 0 && !leave)
@@ -209,6 +222,19 @@ internal static class AppearanceEditorUi
     private static void BeginExitPosePreservation()
     {
         exitPoseHovered = AppearanceSession.CurrentEditorPoseHovered;
+        exitFocusData = cancelInputFocusData ?? ReadCurrentListFocus() ?? lastFocusData;
+        exitFocusCategory = cancelInputFocusData != null ? cancelInputFocusCategory : page.selectTabCategory;
+        cancelInputFocusData = null;
+        // Keep a hierarchy lookup only as a fallback for the first frame before the
+        // stock focus callback has reported any item.
+        if (exitFocusData == null && page?.partsScrollGroup != null)
+            foreach (var icon in page.partsScrollGroup.GetComponentsInChildren<UIBazaarCustomPartsIconContent>(true))
+                if (icon != null && icon.gameObject.activeInHierarchy && icon.IsFocused && icon.cacheData != null)
+                {
+                    exitFocusData = icon.cacheData;
+                    exitFocusCategory = page.selectTabCategory;
+                    break;
+                }
         exitPosePreserving = true;
         RestoreExitPose();
     }
@@ -220,14 +246,58 @@ internal static class AppearanceEditorUi
 
     private static void RestoreExitPoseAndEndPreservation()
     {
+        ScheduleExitFocusRestore();
         RestoreExitPose();
         EndExitPosePreservation();
     }
 
-    private static void EndExitPosePreservation() => exitPosePreserving = false;
+    private static void ScheduleExitFocusRestore()
+    {
+        pendingExitFocusData = exitFocusData;
+        pendingExitFocusCategory = exitFocusCategory;
+        pendingExitFocusHovered = exitPoseHovered;
+        pendingExitFocusFrame = Time.frameCount + 2;
+    }
+
+    private static void RestorePendingExitFocus()
+    {
+        if (pendingExitFocusData == null || pendingExitFocusFrame < 0 ||
+            Time.frameCount < pendingExitFocusFrame || !Active || page?.partsScrollGroup == null) return;
+        var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
+        if (modeTransitioning || PresetUiController.IsPresetUiOpen)
+        {
+            CancelPendingExitFocus();
+            return;
+        }
+        // Close completion can precede the manager releasing the original modal.
+        if (manager != null && manager.IsDialog) return;
+
+        var target = pendingExitFocusData;
+        var category = pendingExitFocusCategory;
+        var hovered = pendingExitFocusHovered;
+        pendingExitFocusData = null;
+        pendingExitFocusFrame = -1;
+        if (page.selectTabCategory != category || page.cacheCustomPartsListDic == null ||
+            !page.cacheCustomPartsListDic.TryGetValue(category, out var items) || items == null) return;
+        for (int i = 0; i < items.Count; i++)
+            if (SameFocusChoice(items[i], target))
+            {
+                page.partsScrollGroup.SetFocus(i);
+                AppearanceSession.RestoreCurrentEditorPose(hovered);
+                return;
+            }
+    }
+
+    private static void EndExitPosePreservation()
+    {
+        exitPosePreserving = false;
+        exitFocusData = null;
+        cancelInputFocusData = null;
+    }
 
     private static void FinishAppearanceSessionAndLeave()
     {
+        CancelPendingExitFocus();
         RestoreExitPose();
         AppearanceSession.EndAppearanceSession();
         TransitionAppearance(false);
@@ -282,6 +352,7 @@ internal static class AppearanceEditorUi
         }
         RefreshFooterForDialogState();
         ResumeStockFooterWhenReady();
+        RestorePendingExitFocus();
         ApplyAppearanceGuide();
         if (Active)
         {
@@ -371,6 +442,7 @@ internal static class AppearanceEditorUi
 
     internal static void LeaveAppearance()
     {
+        CancelPendingExitFocus();
         if (!Active) return;
         RestoreChoiceLists();
         Active = false;
@@ -519,6 +591,13 @@ internal static class AppearanceEditorUi
         EnsureChoiceList(category);
         if (!owner.cacheCustomPartsListDic.TryGetValue(category, out var items) || items == null)
             return false;
+        // Closing a modal can ask for the initial focus again. During our exit
+        // confirmation this must mean the browsing cursor, not the applied item.
+        var preserved = exitPosePreserving ? exitFocusData : pendingExitFocusData;
+        var preservedCategory = exitPosePreserving ? exitFocusCategory : pendingExitFocusCategory;
+        if (preserved != null && owner == page && category == preservedCategory)
+            for (int i = 0; i < items.Count; i++)
+                if (SameFocusChoice(items[i], preserved)) { focusId = i; return true; }
         if (AppearanceSession.UsesActualAppearance(partCategory, slot) && actualChoiceData.TryGetValue(category, out var actual) &&
             items.Count > 0 && SameData(items[0], actual)) { focusId = 0; return true; }
         if (AppearanceSession.UsesHiddenAppearance(partCategory, slot))
@@ -555,6 +634,17 @@ internal static class AppearanceEditorUi
 
     private static bool SameData(BazaarCustomItemData left, BazaarCustomItemData right) =>
         left != null && right != null && IL2CPP.Il2CppObjectBaseToPtr(left) == IL2CPP.Il2CppObjectBaseToPtr(right);
+
+    private static bool SameFocusChoice(BazaarCustomItemData left, BazaarCustomItemData right)
+    {
+        if (left == null || right == null || left.Category != right.Category) return false;
+        // Display rows can be different native instances from the cached category
+        // list. Actual and fixed appearance can also share the same item ID.
+        if (IsActualChoice(left) || IsActualChoice(right))
+            return IsActualChoice(left) && IsActualChoice(right);
+        if (left.IsUiRemove || right.IsUiRemove) return left.IsUiRemove && right.IsUiRemove;
+        return left.PartsData != null && right.PartsData != null && left.PartsData.Id == right.PartsData.Id;
+    }
 
     private static bool IsActualChoice(BazaarCustomItemData data) =>
         data != null && actualChoiceData.TryGetValue(data.Category, out var choice) && SameData(data, choice);
@@ -1021,6 +1111,53 @@ internal static class AppearanceEditorUi
     {
         lastFocusData = data;
         lastFocusCategory = category;
+    }
+
+    internal static bool CaptureCancelInputFocus(ControllableUI source)
+    {
+        if (!Active || modeTransitioning || exitConfirmationOpen || source == null || page == null ||
+            source.GetComponentInParent<UIDialog>() != null) return false;
+        var sourceTransform = source.transform;
+        var pageTransform = page.transform;
+        if (sourceTransform == null || pageTransform == null ||
+            sourceTransform != pageTransform && !sourceTransform.IsChildOf(pageTransform)) return false;
+        if (cancelInputFocusData != null || PresetUiController.IsPresetUiOpen) return false;
+        cancelInputFocusData = ReadCurrentListFocus() ?? lastFocusData;
+        cancelInputFocusCategory = page.selectTabCategory;
+        return true;
+    }
+
+    // The input can be rejected downstream. Never carry its snapshot to another B.
+    internal static void EndCancelInputFocus() => cancelInputFocusData = null;
+
+    internal static void CancelPendingExitFocus()
+    {
+        pendingExitFocusData = null;
+        pendingExitFocusFrame = -1;
+    }
+
+    internal static void ObserveNewEditorInput(ControllableUI source)
+    {
+        if (pendingExitFocusData == null || !Active || modeTransitioning || source == null || page == null ||
+            source.GetComponentInParent<UIDialog>() != null) return;
+        var sourceTransform = source.transform;
+        if (sourceTransform != page.transform && !sourceTransform.IsChildOf(page.transform)) return;
+        var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
+        if (manager != null && manager.IsDialog) return;
+        CancelPendingExitFocus();
+    }
+
+    private static BazaarCustomItemData ReadCurrentListFocus()
+    {
+        var group = page?.partsScrollGroup;
+        if (group == null) return null;
+        var icon = group.FocusedChild?.TryCast<UIBazaarCustomPartsIconContent>();
+        if (icon?.cacheData != null) return icon.cacheData;
+        int index = group.CurrentId;
+        if (page.cacheCustomPartsListDic != null &&
+            page.cacheCustomPartsListDic.TryGetValue(page.selectTabCategory, out var items) &&
+            items != null && index >= 0 && index < items.Count) return items[index];
+        return null;
     }
 
     internal static void RefreshPresentation()

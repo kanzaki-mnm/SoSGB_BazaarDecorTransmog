@@ -213,6 +213,7 @@ internal static partial class PresetUiController
     internal static void Open()
     {
         if (failed || !AppearanceSession.Enabled) return;
+        AppearanceEditorUi.CancelPendingExitFocus();
         if (!rowLoadAttempted)
         {
             rowLoadAttempted = true;
@@ -981,8 +982,11 @@ internal static partial class PresetUiController
 [HarmonyPatch(typeof(ControllableUI), nameof(ControllableUI.OnSouth))]
 internal static class PresetNameChoiceCancel
 {
-    static bool Prefix(ControllableUI __instance)
+    static bool Prefix(ControllableUI __instance, out bool __state)
     {
+        bool captured = false;
+        Plugin.Guard("appearance-cancel-focus", () => captured = AppearanceEditorUi.CaptureCancelInputFocus(__instance));
+        __state = captured;
         bool owned = false;
         bool allow = true;
         Plugin.Guard("preset-name-choice-cancel", () =>
@@ -1004,6 +1008,11 @@ internal static class PresetNameChoiceCancel
             PresetUiController.Abort();
         });
         return allow;
+    }
+
+    static void Finalizer(bool __state)
+    {
+        if (__state) AppearanceEditorUi.EndCancelInputFocus();
     }
 }
 

@@ -27,6 +27,7 @@ public sealed class Plugin : BasePlugin
             transmogHarmony.CreateClassProcessor(typeof(ObserveShop)).Patch();
             transmogHarmony.CreateClassProcessor(typeof(BeforeEditing)).Patch();
             transmogHarmony.CreateClassProcessor(typeof(PresetEditorInputEligibility)).Patch();
+            transmogHarmony.CreateClassProcessor(typeof(NativeExitFocusNewInput)).Patch();
             foreach (var patch in new[] { typeof(ClosedTentProbe), typeof(ClosedTentModelReady), typeof(ClosedShelfProbe), typeof(NativeFieldModelReady), typeof(NativeFieldModelInitialized), typeof(NativePageShown), typeof(NativeFocus), typeof(NativeDecide), typeof(NativeAppearanceChoiceSound), typeof(NativeCancel), typeof(NativePageClosed), typeof(NativePlacementGuard), typeof(NativeAppearanceInput), typeof(NativePresetStartProbe), typeof(PresetNameProbeCancel), typeof(PresetNameChoiceCancel), typeof(PresetCompletionDialogCancel), typeof(PresetEmptySlotDecisionGuard), typeof(NativeAppearanceGuideLocalization), typeof(NativeAppearanceFooterGuideData), typeof(NativeAppearanceDetailGuard), typeof(NativeAppearanceDetailInputGuard), typeof(NativeStockObjectExitChoiceGuideState) })
                 transmogHarmony.CreateClassProcessor(patch).Patch();
             foreach (var patch in new[] { typeof(NativeAppearanceInitialFocus), typeof(NativeAppearanceTabPreviewGuard),
