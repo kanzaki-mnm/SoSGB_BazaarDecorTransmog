@@ -2,14 +2,18 @@
 
 『牧場物語 Let's！風のグランドバザール / STORY OF SEASONS: Grand Bazaar』の自店舗のオブジェについて、実効果を維持したまま見た目を変更するModです。
 
-対象はテント1枠、陳列台3枠、小オブジェ4枠、大オブジェ3枠です。現在のみための保存と、6スロットのプリセット保存・読み込み・削除に対応しています。画面表示は日本語・英語に対応しています。
+対象はテント1枠、陳列台3枠、小オブジェ4枠、大オブジェ3枠です。現在のみための保存と、6スロットのプリセット保存・読み込み・削除に対応しています。Mod独自の表示は日本語・英語に対応し、それ以外の言語では英語を使用します。公式のオブジェ名などはゲームの言語設定に従います。
+
+## 制約
+
+外見を反映するには、その場所の実効果側にもオブジェが配置されている必要があります。実効果側が「配置しない」の場合、Modで外見を指定しても表示されません。
 
 ## 導入・更新
 
 Windows版と、ゲームに対応したBepInEx 6のIL2CPP環境が必要です。BepInExが起動する環境に導入してください。
 
 1. ゲームを終了します。
-2. 配布ZIP内の `BazaarDecorTransmog.dll` と `i18n` フォルダを、ゲームフォルダの `BepInEx/plugins/BazaarDecorTransmog/` に配置します。
+2. 配布ZIP内の `BazaarDecorTransmog.dll`、`README.md`、`i18n` フォルダを、ゲームフォルダの `BepInEx/plugins/BazaarDecorTransmog/` に配置します。
 3. ゲームを起動します。
 
 配置例:
@@ -19,6 +23,7 @@ BepInEx/
   plugins/
     BazaarDecorTransmog/
       BazaarDecorTransmog.dll
+      README.md
       i18n/
         ja.json
         en.json
@@ -82,6 +87,8 @@ BepInEx/
 | `DiagnosticError` | Modの処理中に例外が発生しました。再起動でも続く場合は、操作手順とログを添えて報告してください。 |
 
 たとえば `invalid start of a value` はJSONとして読み取れないデータ、`newer Mod version` は現在のModより新しい形式のデータを示します。原因が分からない場合は、ログと発生した操作を添えて報告してください。
+
+ゲームが突然終了し、`LogOutput.log` に原因が残っていない場合は、`BepInEx/ErrorLog.log` が作成されていれば、その内容も確認・報告してください。
 
 復旧できない破損データや、対応していない新しい形式は自動で上書きしません。新しいModで保存されたデータなら、その形式に対応するバージョンを使用してください。
 

@@ -9,6 +9,26 @@ using UnityEngine.UI;
 
 namespace BazaarDecorTransmog;
 
+// Observe actual input, not focus callbacks: closing a modal also sends focus
+// callbacks and must not be mistaken for a new player command.
+[HarmonyPatch]
+internal static class NativeExitFocusNewInput
+{
+    static System.Collections.Generic.IEnumerable<System.Reflection.MethodBase> TargetMethods()
+    {
+        // Do not hook InputSlotSelect: its native trampoline caused an access
+        // violation on this game build. Decisions are observed on the page below.
+        foreach (var name in new[] { nameof(ControllableUI.OnEast), nameof(ControllableUI.OnSouth),
+            nameof(ControllableUI.OnL), nameof(ControllableUI.OnR) })
+            yield return AccessTools.DeclaredMethod(typeof(ControllableUI), name);
+        yield return AccessTools.DeclaredMethod(typeof(NestableUI), nameof(NestableUI.InputDirection));
+        yield return AccessTools.DeclaredMethod(typeof(NestableUI), nameof(NestableUI.InputLStickDirection));
+    }
+
+    static void Prefix(ControllableUI __instance) =>
+        Plugin.Guard("appearance-new-input", () => AppearanceEditorUi.ObserveNewEditorInput(__instance));
+}
+
 [HarmonyPatch(typeof(UIBazaarCustomPage), nameof(UIBazaarCustomPage.UpdateCachePartsList),
     new[] { typeof(Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray<ItemData>), typeof(BazaarCustomPageCategory) })]
 internal static class NativeAppearanceChoiceListUpdate
@@ -224,6 +244,8 @@ internal static class NativeFocus
             AppearanceEditorUi.RememberFocus(data, category);
             return true;
         }
+        // Keep the fallback aligned with browsing, including unconfirmed previews.
+        AppearanceEditorUi.RememberFocus(data, category);
         Plugin.Guard("native-ui-focus", () => AppearanceEditorUi.Select(data, category, false), AppearanceEditorUi.Abort);
         return false;
     }
@@ -269,6 +291,7 @@ internal static class NativeDecide
     static bool Prefix(UIBazaarCustomPage __instance, BazaarCustomItemData data)
     {
         if (!AppearanceEditorUi.Active) return true;
+        AppearanceEditorUi.CancelPendingExitFocus();
         if (PresetUiController.IsPresetUiOpen) return false;
         Plugin.Guard("native-ui-decide", () => AppearanceEditorUi.Select(data, __instance.selectTabCategory, true), AppearanceEditorUi.Abort);
         return false;

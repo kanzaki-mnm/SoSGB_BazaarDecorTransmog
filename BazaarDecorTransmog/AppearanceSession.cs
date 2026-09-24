@@ -13,6 +13,7 @@ internal static class AppearanceSession
     {
         Enabled = false;
         AppearanceEditorUi.Ready = false;
+        AppearanceModelPreloader.Cancel();
         // Keep runtime patches installed so an already open Mod dialog can close.
     }
     private static readonly SlotAppearance[] slots = Enumerable.Range(0, 4).Select(i => new SlotAppearance(i))
@@ -119,6 +120,20 @@ internal static class AppearanceSession
         for (int i = 0; i < slots.Length; i++) slots[i].Bind(draft.Slots.FirstOrDefault(s => Matches(s, i)));
         ClosedTentProbe.RestoreAll("preset or mode rebound");
         ClosedShelfProbe.RestoreAll("preset or mode rebound");
+    }
+
+    private static IEnumerable<string> CurrentAppearanceModelNames()
+    {
+        var master = BokuMono.API.Bazaar.MDM?.CustomPartsMaster;
+        if (master == null) yield break;
+        for (int i = 0; i < slots.Length; i++)
+        {
+            uint id = AppearanceId(slots[i].PartCategory, slots[i].Index);
+            if (id == 0) continue;
+            var part = master.GetMasterData(id);
+            if (part != null && !string.IsNullOrWhiteSpace(part.modelName))
+                yield return part.modelName;
+        }
     }
 
     internal static void BeginNativePreview(BazaarCustomPageCategory focusedCategory)
@@ -249,7 +264,12 @@ internal static class AppearanceSession
 
     internal static void Observe(BazaarMyShop instance)
     {
-        if (shop != instance) { EditorPreview = false; wasEditing = false; }
+        if (shop != instance)
+        {
+            EditorPreview = false;
+            wasEditing = false;
+            AppearanceModelPreloader.Cancel();
+        }
         shop = instance;
         foreach (var slot in slots) slot.Observe(instance);
     }
@@ -257,6 +277,7 @@ internal static class AppearanceSession
     internal static void Suspend()
     {
         EditorPreview = false;
+        AppearanceModelPreloader.Cancel();
         Recovery.Run(slots.Select(slot => (Action)slot.Suspend));
     }
 
@@ -324,8 +345,14 @@ internal static class AppearanceSession
             if (!editing) AppearanceEditorUi.Exit();
             Suspend();
             wasEditing = editing;
-            if (editing) AppearanceEditorUi.Sync();
+            if (editing)
+            {
+                AppearanceEditorUi.Sync();
+                AppearanceModelPreloader.Start(shop, CurrentAppearanceModelNames());
+            }
         }
+        if (editing) Plugin.Guard("appearance-preload", AppearanceModelPreloader.Tick,
+            AppearanceModelPreloader.Cancel);
         if (editing) Plugin.Guard("native-ui-sync", AppearanceEditorUi.Sync, AppearanceEditorUi.Abort);
         for (int i = 0; i < slots.Length; i++)
         {

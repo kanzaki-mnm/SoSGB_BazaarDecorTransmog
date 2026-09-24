@@ -42,6 +42,14 @@ internal static class AppearanceEditorUi
     private static bool exitConfirmationOpen;
     private static bool exitPosePreserving;
     private static bool exitPoseHovered;
+    private static BazaarCustomItemData exitFocusData;
+    private static BazaarCustomPageCategory exitFocusCategory;
+    private static BazaarCustomItemData cancelInputFocusData;
+    private static BazaarCustomPageCategory cancelInputFocusCategory;
+    private static BazaarCustomItemData pendingExitFocusData;
+    private static BazaarCustomPageCategory pendingExitFocusCategory;
+    private static bool pendingExitFocusHovered;
+    private static int pendingExitFocusFrame = -1;
     private static Il2CppSystem.Action<int> exitChoiceCallback;
     private static Il2CppSystem.Action leaveAfterDialog;
     private static Il2CppSystem.Action restorePoseAfterDialog;
@@ -73,6 +81,10 @@ internal static class AppearanceEditorUi
         modeTransitioning = false;
         exitConfirmationOpen = false;
         exitPosePreserving = false;
+        exitFocusData = null;
+        cancelInputFocusData = null;
+        pendingExitFocusData = null;
+        pendingExitFocusFrame = -1;
         bool wasActive = Active;
         lastFocusData = null;
         Recovery.Run(() =>
@@ -136,6 +148,7 @@ internal static class AppearanceEditorUi
     internal static void LeaveAppearanceFromCancel()
     {
         if (!Active || modeTransitioning || exitConfirmationOpen) return;
+        CancelPendingExitFocus();
         BeginExitPosePreservation();
         if (!AppearanceSession.HasAppearanceSessionChanges())
         {
@@ -181,7 +194,7 @@ internal static class AppearanceEditorUi
         if (manager == null)
         {
             if (leave) FinishAppearanceSessionAndLeave();
-            else EndExitPosePreservation();
+            else RestoreExitPoseAndEndPreservation();
             return;
         }
         if (index == 0 && !leave)
@@ -209,6 +222,19 @@ internal static class AppearanceEditorUi
     private static void BeginExitPosePreservation()
     {
         exitPoseHovered = AppearanceSession.CurrentEditorPoseHovered;
+        exitFocusData = cancelInputFocusData ?? ReadCurrentListFocus() ?? lastFocusData;
+        exitFocusCategory = cancelInputFocusData != null ? cancelInputFocusCategory : page.selectTabCategory;
+        cancelInputFocusData = null;
+        // Keep a hierarchy lookup only as a fallback for the first frame before the
+        // stock focus callback has reported any item.
+        if (exitFocusData == null && page?.partsScrollGroup != null)
+            foreach (var icon in page.partsScrollGroup.GetComponentsInChildren<UIBazaarCustomPartsIconContent>(true))
+                if (icon != null && icon.gameObject.activeInHierarchy && icon.IsFocused && icon.cacheData != null)
+                {
+                    exitFocusData = icon.cacheData;
+                    exitFocusCategory = page.selectTabCategory;
+                    break;
+                }
         exitPosePreserving = true;
         RestoreExitPose();
     }
@@ -220,14 +246,58 @@ internal static class AppearanceEditorUi
 
     private static void RestoreExitPoseAndEndPreservation()
     {
+        ScheduleExitFocusRestore();
         RestoreExitPose();
         EndExitPosePreservation();
     }
 
-    private static void EndExitPosePreservation() => exitPosePreserving = false;
+    private static void ScheduleExitFocusRestore()
+    {
+        pendingExitFocusData = exitFocusData;
+        pendingExitFocusCategory = exitFocusCategory;
+        pendingExitFocusHovered = exitPoseHovered;
+        pendingExitFocusFrame = Time.frameCount + 2;
+    }
+
+    private static void RestorePendingExitFocus()
+    {
+        if (pendingExitFocusData == null || pendingExitFocusFrame < 0 ||
+            Time.frameCount < pendingExitFocusFrame || !Active || page?.partsScrollGroup == null) return;
+        var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
+        if (modeTransitioning || PresetUiController.IsPresetUiOpen)
+        {
+            CancelPendingExitFocus();
+            return;
+        }
+        // Close completion can precede the manager releasing the original modal.
+        if (manager != null && manager.IsDialog) return;
+
+        var target = pendingExitFocusData;
+        var category = pendingExitFocusCategory;
+        var hovered = pendingExitFocusHovered;
+        pendingExitFocusData = null;
+        pendingExitFocusFrame = -1;
+        if (page.selectTabCategory != category || page.cacheCustomPartsListDic == null ||
+            !page.cacheCustomPartsListDic.TryGetValue(category, out var items) || items == null) return;
+        for (int i = 0; i < items.Count; i++)
+            if (SameFocusChoice(items[i], target))
+            {
+                page.partsScrollGroup.SetFocus(i);
+                AppearanceSession.RestoreCurrentEditorPose(hovered);
+                return;
+            }
+    }
+
+    private static void EndExitPosePreservation()
+    {
+        exitPosePreserving = false;
+        exitFocusData = null;
+        cancelInputFocusData = null;
+    }
 
     private static void FinishAppearanceSessionAndLeave()
     {
+        CancelPendingExitFocus();
         RestoreExitPose();
         AppearanceSession.EndAppearanceSession();
         TransitionAppearance(false);
@@ -282,6 +352,7 @@ internal static class AppearanceEditorUi
         }
         RefreshFooterForDialogState();
         ResumeStockFooterWhenReady();
+        RestorePendingExitFocus();
         ApplyAppearanceGuide();
         if (Active)
         {
@@ -371,6 +442,7 @@ internal static class AppearanceEditorUi
 
     internal static void LeaveAppearance()
     {
+        CancelPendingExitFocus();
         if (!Active) return;
         RestoreChoiceLists();
         Active = false;
@@ -469,10 +541,12 @@ internal static class AppearanceEditorUi
         }
         else if (data.PartsData != null)
         {
-            detail.SetData(data);
-            // SetData has already localized the text, but its caption starts with three
-            // generated rows for series, effect, and target. Appearance mode needs only
-            // the remaining flavor description.
+            // The ordinary SetData overload composes series/effect/target rows ahead of the
+            // flavor text. Request the underlying item name and caption tables directly so
+            // this remains correct for every game language and for decor with fewer rows.
+            uint textId = data.PartsData.Id;
+            detail.SetData(textId, textId,
+                LocalizeTextTableType.ItemNameText, LocalizeTextTableType.ItemCaptionText);
             if (detail.caption?.text is string caption)
                 detail.caption.SetText(AppearanceFlavor(caption));
         }
@@ -484,10 +558,18 @@ internal static class AppearanceEditorUi
     private static string AppearanceFlavor(string caption)
     {
         int start = 0;
-        for (int row = 0; row < 3; row++)
+        int removedRows = 0;
+        // The localized item caption begins with up to three label/value rows. Their
+        // wording varies by language, but the game separates every label with a colon.
+        // Stop at the first non-labelled row so colons later in flavor prose are retained.
+        while (start < caption.Length && removedRows < 3)
         {
             int newline = caption.IndexOf('\n', start);
-            if (newline < 0) return caption;
+            int end = newline >= 0 ? newline : caption.Length;
+            string row = caption[start..end];
+            if (!row.Contains(':') && !row.Contains('：')) break;
+            removedRows++;
+            if (newline < 0) return string.Empty;
             start = newline + 1;
         }
         return caption[start..].TrimStart('\r', '\n');
@@ -509,6 +591,13 @@ internal static class AppearanceEditorUi
         EnsureChoiceList(category);
         if (!owner.cacheCustomPartsListDic.TryGetValue(category, out var items) || items == null)
             return false;
+        // Closing a modal can ask for the initial focus again. During our exit
+        // confirmation this must mean the browsing cursor, not the applied item.
+        var preserved = exitPosePreserving ? exitFocusData : pendingExitFocusData;
+        var preservedCategory = exitPosePreserving ? exitFocusCategory : pendingExitFocusCategory;
+        if (preserved != null && owner == page && category == preservedCategory)
+            for (int i = 0; i < items.Count; i++)
+                if (SameFocusChoice(items[i], preserved)) { focusId = i; return true; }
         if (AppearanceSession.UsesActualAppearance(partCategory, slot) && actualChoiceData.TryGetValue(category, out var actual) &&
             items.Count > 0 && SameData(items[0], actual)) { focusId = 0; return true; }
         if (AppearanceSession.UsesHiddenAppearance(partCategory, slot))
@@ -545,6 +634,17 @@ internal static class AppearanceEditorUi
 
     private static bool SameData(BazaarCustomItemData left, BazaarCustomItemData right) =>
         left != null && right != null && IL2CPP.Il2CppObjectBaseToPtr(left) == IL2CPP.Il2CppObjectBaseToPtr(right);
+
+    private static bool SameFocusChoice(BazaarCustomItemData left, BazaarCustomItemData right)
+    {
+        if (left == null || right == null || left.Category != right.Category) return false;
+        // Display rows can be different native instances from the cached category
+        // list. Actual and fixed appearance can also share the same item ID.
+        if (IsActualChoice(left) || IsActualChoice(right))
+            return IsActualChoice(left) && IsActualChoice(right);
+        if (left.IsUiRemove || right.IsUiRemove) return left.IsUiRemove && right.IsUiRemove;
+        return left.PartsData != null && right.PartsData != null && left.PartsData.Id == right.PartsData.Id;
+    }
 
     private static bool IsActualChoice(BazaarCustomItemData data) =>
         data != null && actualChoiceData.TryGetValue(data.Category, out var choice) && SameData(data, choice);
@@ -770,29 +870,41 @@ internal static class AppearanceEditorUi
             readback = new Texture2D(width, height, TextureFormat.RGBA32, false);
             // textureRect may be trimmed inside an atlas. Preserve the original
             // sprite's transparent margins so the veil has the same visual size.
-            for (int y = 0; y < height; y++)
-                for (int x = 0; x < width; x++) readback.SetPixel(x, y, Color.clear);
+            // SetPixel crosses the managed/Unity boundary once per pixel and caused a
+            // visible first-tab stall. Clear the texture in one bulk operation instead.
+            readback.SetPixels32(new Color32[width * height]);
             readback.Apply(false, false);
             readback.ReadPixels(region, copyX, copyY, false);
             readback.Apply(false, false);
-            var pixels = readback.GetPixels();
-            var veilPixels = new Color[pixels.Length];
+            var pixels = readback.GetPixels32();
+            var horizontalAlpha = new byte[pixels.Length];
+            var veilPixels = new Color32[pixels.Length];
+            // A square dilation is separable. Two short one-dimensional passes produce
+            // the same two-pixel outline with far fewer comparisons than scanning the
+            // full 5x5 neighbourhood for every pixel.
             for (int y = 0; y < height; y++)
                 for (int x = 0; x < width; x++)
                 {
-                    // Dilate alpha only: this makes a narrow cream outline that
-                    // follows the art rather than scaling the full rectangular UI Image.
-                    float alpha = 0f;
-                    int minY = Mathf.Max(0, y - ActualVeilOutlinePixels);
-                    int maxY = Mathf.Min(height - 1, y + ActualVeilOutlinePixels);
+                    byte alpha = 0;
                     int minX = Mathf.Max(0, x - ActualVeilOutlinePixels);
                     int maxX = Mathf.Min(width - 1, x + ActualVeilOutlinePixels);
-                    for (int sampleY = minY; sampleY <= maxY; sampleY++)
-                        for (int sampleX = minX; sampleX <= maxX; sampleX++)
-                            alpha = Mathf.Max(alpha, pixels[sampleY * width + sampleX].a);
-                    veilPixels[y * width + x] = new Color(1f, 1f, 1f, alpha);
+                    for (int sampleX = minX; sampleX <= maxX; sampleX++)
+                        if (pixels[y * width + sampleX].a > alpha)
+                            alpha = pixels[y * width + sampleX].a;
+                    horizontalAlpha[y * width + x] = alpha;
                 }
-            readback.SetPixels(veilPixels);
+            for (int y = 0; y < height; y++)
+                for (int x = 0; x < width; x++)
+                {
+                    byte alpha = 0;
+                    int minY = Mathf.Max(0, y - ActualVeilOutlinePixels);
+                    int maxY = Mathf.Min(height - 1, y + ActualVeilOutlinePixels);
+                    for (int sampleY = minY; sampleY <= maxY; sampleY++)
+                        if (horizontalAlpha[sampleY * width + x] > alpha)
+                            alpha = horizontalAlpha[sampleY * width + x];
+                    veilPixels[y * width + x] = new Color32(255, 255, 255, alpha);
+                }
+            readback.SetPixels32(veilPixels);
             readback.Apply(false, true);
             readback.name = "BazaarDecorTransmog.WhiteIcon." + key;
             var pivot = new Vector2(source.pivot.x / source.rect.width, source.pivot.y / source.rect.height);
@@ -1001,6 +1113,53 @@ internal static class AppearanceEditorUi
         lastFocusCategory = category;
     }
 
+    internal static bool CaptureCancelInputFocus(ControllableUI source)
+    {
+        if (!Active || modeTransitioning || exitConfirmationOpen || source == null || page == null ||
+            source.GetComponentInParent<UIDialog>() != null) return false;
+        var sourceTransform = source.transform;
+        var pageTransform = page.transform;
+        if (sourceTransform == null || pageTransform == null ||
+            sourceTransform != pageTransform && !sourceTransform.IsChildOf(pageTransform)) return false;
+        if (cancelInputFocusData != null || PresetUiController.IsPresetUiOpen) return false;
+        cancelInputFocusData = ReadCurrentListFocus() ?? lastFocusData;
+        cancelInputFocusCategory = page.selectTabCategory;
+        return true;
+    }
+
+    // The input can be rejected downstream. Never carry its snapshot to another B.
+    internal static void EndCancelInputFocus() => cancelInputFocusData = null;
+
+    internal static void CancelPendingExitFocus()
+    {
+        pendingExitFocusData = null;
+        pendingExitFocusFrame = -1;
+    }
+
+    internal static void ObserveNewEditorInput(ControllableUI source)
+    {
+        if (pendingExitFocusData == null || !Active || modeTransitioning || source == null || page == null ||
+            source.GetComponentInParent<UIDialog>() != null) return;
+        var sourceTransform = source.transform;
+        if (sourceTransform != page.transform && !sourceTransform.IsChildOf(page.transform)) return;
+        var manager = UnityEngine.Object.FindObjectOfType<UIManager>();
+        if (manager != null && manager.IsDialog) return;
+        CancelPendingExitFocus();
+    }
+
+    private static BazaarCustomItemData ReadCurrentListFocus()
+    {
+        var group = page?.partsScrollGroup;
+        if (group == null) return null;
+        var icon = group.FocusedChild?.TryCast<UIBazaarCustomPartsIconContent>();
+        if (icon?.cacheData != null) return icon.cacheData;
+        int index = group.CurrentId;
+        if (page.cacheCustomPartsListDic != null &&
+            page.cacheCustomPartsListDic.TryGetValue(page.selectTabCategory, out var items) &&
+            items != null && index >= 0 && index < items.Count) return items[index];
+        return null;
+    }
+
     internal static void RefreshPresentation()
     {
         if (!Ready || page == null) return;
@@ -1020,30 +1179,55 @@ internal static class AppearanceEditorUi
         if (modeTitle == null)
         {
             var root = page.transform.root;
+            UIPageHeader localizedHeader = null;
+            int visibleHeaderCount = 0;
             foreach (var header in root.GetComponentsInChildren<UIPageHeader>(true))
             {
                 var text = header?.headerText;
-                string replacement = ReplacementTitle(text?.text);
-                if (text == null || replacement == null) continue;
-                modeTitle = text;
-                originalTitle = text.text;
+                if (text == null) continue;
+
+                // The Japanese and English labels are stable known identifiers. For every
+                // other language, use the sole visible page header instead of depending on
+                // translated text that can change with the game's localization data.
+                if (text.text == "オブジェの変更" || text.text == "Redecorate")
+                {
+                    localizedHeader = header;
+                    break;
+                }
+                if (header.gameObject.activeInHierarchy && text.gameObject.activeInHierarchy)
+                {
+                    localizedHeader = header;
+                    visibleHeaderCount++;
+                }
+            }
+
+            if (localizedHeader != null &&
+                (localizedHeader.headerText.text == "オブジェの変更" ||
+                 localizedHeader.headerText.text == "Redecorate" ||
+                 visibleHeaderCount == 1))
+            {
+                modeTitle = localizedHeader.headerText;
+                originalTitle = modeTitle.text;
                 if (originalTitle == "オブジェの変更") Localization.SetLanguage(Language.ja);
                 else if (originalTitle == "Redecorate") Localization.SetLanguage(Language.en);
-                originalTitleColor = text.color;
-                modeBackground = header.bg;
+                originalTitleColor = modeTitle.color;
+                modeBackground = localizedHeader.bg;
                 if (modeBackground != null) originalBackgroundColor = modeBackground.color;
-                modeIcon = header.icon;
+                modeIcon = localizedHeader.icon;
                 if (modeIcon != null) originalIconColor = modeIcon.color;
-                break;
             }
             if (modeTitle == null && !titleSearchReported)
             {
                 titleSearchReported = true;
-                Plugin.Warn("NativeModeTitleNotFound", new { expected = new[] { "オブジェの変更", "Redecorate" } });
+                Plugin.Warn("NativeModeTitleNotFound", new
+                {
+                    expected = new[] { "オブジェの変更", "Redecorate", "one visible localized header" },
+                    visibleHeaderCount
+                });
             }
         }
         if (modeTitle == null) return;
-        modeTitle.text = ReplacementTitle(originalTitle);
+        modeTitle.text = ReplacementTitle();
         modeTitle.color = new Color(0.38f, 0.20f, 0.55f, 1f);
         if (modeBackground != null)
             modeBackground.color = new Color(0.95f, 0.72f, 1f, originalBackgroundColor.a);
@@ -1073,7 +1257,7 @@ internal static class AppearanceEditorUi
         titleSearchReported = false;
     }
 
-    private static string ReplacementTitle(string current)
+    private static string ReplacementTitle()
     {
         switch (PresetUiController.CurrentHeaderMode)
         {
@@ -1082,12 +1266,7 @@ internal static class AppearanceEditorUi
             case PresetUiController.HeaderMode.Load:
                 return Localization.Get("presets.menu.load");
         }
-        return current switch
-        {
-            "オブジェの変更" => Localization.Get("appearance.title"),
-            "Redecorate" => Localization.Get("appearance.title"),
-            _ => null
-        };
+        return Localization.Get("appearance.title");
     }
 
     private static void ApplyAppearanceGuide()

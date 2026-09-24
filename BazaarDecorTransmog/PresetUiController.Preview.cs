@@ -2,6 +2,7 @@ using BokuMono;
 using BokuMono.Data;
 using Il2CppInterop.Runtime;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace BazaarDecorTransmog;
 
@@ -60,17 +61,33 @@ internal static partial class PresetUiController
     {
         var prefabs = UnityEngine.Object.FindObjectOfType<UIPrefabsManager>();
         var page = prefabs?.UIPagePrefabCache(UILoadKey.UIBazaarMaxPriceCustomLogPage);
-        var sourceRows = page?.GetComponentsInChildren<UICustomPartsListItem>(true);
-        if (sourceRows == null || sourceRows.Length != FallbackPreviewOrder.Length)
+        if (page == null)
         {
-            Plugin.Warn("PresetObjectPreviewUnavailable", new { reason = "stock rows unavailable", count = sourceRows?.Length ?? 0 });
+            EnsureObjectPreviewTemplate();
             return;
         }
+        // These rows are serialized references owned by the stock record page. They are
+        // not guaranteed to be discoverable through a component walk while the prefab is
+        // cached but has never been shown in this game session.
+        var officialRows = page.GetComponent<UIBazaarMaxPriceCustomLogPage>()?.bazaarCustomPartsIconList;
+        if (officialRows == null || officialRows.Count != FallbackPreviewOrder.Length)
+        {
+            Plugin.Warn("PresetObjectPreviewUnavailable", new { reason = "stock rows unavailable", count = officialRows?.Count ?? 0 });
+            return;
+        }
+        var sourceRows = officialRows.ToArray();
+        if (sourceRows.Any(row => row == null) ||
+            sourceRows.Select(row => row.GetInstanceID()).Distinct().Count() != sourceRows.Length)
+            throw new InvalidOperationException("Official preview rows are missing or duplicated.");
 
-        var source = sourceRows[0].transform.parent;
+        var source = FindPreviewPanel(page.transform, sourceRows);
         var dialogRect = dialog.GetComponent<RectTransform>();
         var targetParent = dialogRect?.parent;
         if (source == null || targetParent == null) return;
+
+        // Resolve the same serialized rows after cloning without relying on component
+        // enumeration order, which can differ before and after Unity activates the clone.
+        var rowPaths = sourceRows.Select(row => PreviewRowPath(source, row.transform)).ToArray();
 
         objectPreview = UnityEngine.Object.Instantiate(source.gameObject, targetParent, false);
         objectPreview.name = "BDT_PresetObjectPreview";
@@ -93,6 +110,11 @@ internal static partial class PresetUiController
         canvasGroup.blocksRaycasts = false;
         canvasGroup.interactable = false;
 
+        previewRows = rowPaths.Select(path => ResolvePreviewRow(objectPreview.transform, path)).ToArray();
+        if (previewRows.Any(row => row == null) ||
+            previewRows.Select(row => row.GetInstanceID()).Distinct().Count() != previewRows.Length)
+            throw new InvalidOperationException("Cloned preview rows do not match the official list.");
+
         shiftedDialog = dialogRect;
         originalDialogPosition = dialogRect.anchoredPosition;
         dialogRect.anchoredPosition = originalDialogPosition + new Vector2(SlotDialogOffsetX, 0f);
@@ -100,6 +122,58 @@ internal static partial class PresetUiController
         var focused = FocusedSlotChoice();
         var focusedIndex = focused?.data?.id ?? 0;
         RefreshObjectPreview(savingSlot ? -1 : Math.Clamp(focusedIndex, 0, PresetStorage.UiSlotCount - 1));
+    }
+
+    private static Transform FindPreviewPanel(Transform pageRoot, UICustomPartsListItem[] rows)
+    {
+        if (rows.Any(row => row.transform == pageRoot || !row.transform.IsChildOf(pageRoot)))
+            throw new InvalidOperationException("Official preview row is outside its page.");
+
+        Transform panel = null;
+        for (var candidate = rows[0].transform.parent;
+             candidate != null && candidate != pageRoot;
+             candidate = candidate.parent)
+        {
+            if (candidate.GetComponent<RectTransform>() == null ||
+                candidate.GetComponent<Image>() == null ||
+                candidate.GetComponent<VerticalLayoutGroup>() == null ||
+                rows.Any(row => !row.transform.IsChildOf(candidate))) continue;
+            if (panel != null)
+                throw new InvalidOperationException("Official preview panel is ambiguous.");
+            panel = candidate;
+        }
+        if (panel == null)
+            throw new InvalidOperationException("Official preview panel is unavailable.");
+
+        var containedRows = panel.GetComponentsInChildren<UICustomPartsListItem>(true);
+        var officialIds = new HashSet<int>(rows.Select(row => row.GetInstanceID()));
+        if (containedRows.Length != rows.Length ||
+            containedRows.Any(row => !officialIds.Contains(row.GetInstanceID())))
+            throw new InvalidOperationException("Official preview panel contains unexpected rows.");
+        return panel;
+    }
+
+    private static int[] PreviewRowPath(Transform root, Transform row)
+    {
+        var path = new List<int>();
+        while (row != root)
+        {
+            if (row == null)
+                throw new InvalidOperationException("Official row is outside the cloned panel.");
+            path.Add(row.GetSiblingIndex());
+            row = row.parent;
+        }
+        path.Reverse();
+        return path.ToArray();
+    }
+
+    private static UICustomPartsListItem ResolvePreviewRow(Transform root, int[] path)
+    {
+        foreach (int child in path) root = root.GetChild(child);
+        var rows = root.GetComponents<UICustomPartsListItem>();
+        if (rows.Length != 1)
+            throw new InvalidOperationException("Ambiguous cloned preview row.");
+        return rows[0];
     }
 
     private static void RefreshObjectPreview(int uiSlot)
