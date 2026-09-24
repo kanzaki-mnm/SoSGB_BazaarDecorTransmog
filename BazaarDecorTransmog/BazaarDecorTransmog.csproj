@@ -4,7 +4,7 @@
     <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
-    <Version>0.9.178</Version>
+    <Version>1.0.0</Version>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <GameDir Condition="'$(GameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\STORY OF SEASONS Grand Bazaar</GameDir>
   </PropertyGroup>
@@ -18,6 +18,7 @@
     <Compile Include="PresetModels.cs" /><Compile Include="PresetStorage.cs" />
     <Compile Include="VisualIdentity.cs" /><Compile Include="Recovery.cs" /><Compile Include="UiNotificationGate.cs" />
     <Content Include="i18n\*.json"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
+    <Content Include="..\README.md" Link="README.md"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
     <Reference Include="$(GameDir)\BepInEx\interop\*.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\core\BepInEx.Core.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\core\BepInEx.Unity.IL2CPP.dll" Private="false" />
